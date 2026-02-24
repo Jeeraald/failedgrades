@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+/* ============================= */
+/* Row Editor Styling */
+/* ============================= */
+
+.p-row-editor-init,
+.p-row-editor-save,
+.p-row-editor-cancel {
+  border-radius: 9999px !important;
+  transition: all 0.2s ease-in-out;
+}
+
+.p-row-editor-init:hover,
+.p-row-editor-save:hover,
+.p-row-editor-cancel:hover {
+  transform: scale(1.1);
+}
+
+/* Edit (blue / info) */
+.p-row-editor-init {
+  background-color: #0ea5e9 !important;
+  border-color: #0ea5e9 !important;
+  color: white !important;
+}
+
+/* Save (green) */
+.p-row-editor-save {
+  background-color: #22c55e !important;
+  border-color: #22c55e !important;
+  color: white !important;
+}
+
+/* Cancel (red) */
+.p-row-editor-cancel {
+  background-color: #ef4444 !important;
+  border-color: #ef4444 !important;
+  color: white !important;
+}
+
+/* ========================================= */
+/* CONFIRM DIALOG TEXT-ONLY STYLE */
+/* ========================================= */
+
+/* Remove default PrimeReact button style */
+.p-confirm-dialog .p-button.custom-yes,
+.p-confirm-dialog .p-button.custom-no {
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  font-weight: 600;
+}
+
+/* YES = Red text */
+.p-confirm-dialog .p-button.custom-yes {
+  color: #dc2626 !important;
+}
+
+/* NO = Green text */
+.p-confirm-dialog .p-button.custom-no {
+  color: #16a34a !important;
+}
+
+/* Hover effect */
+.p-confirm-dialog .p-button.custom-yes:hover,
+.p-confirm-dialog .p-button.custom-no:hover {
+  background: none !important;
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+/* Remove focus glow */
+.p-confirm-dialog .p-button:focus {
+  box-shadow: none !important;
+}
+
+.p-confirm-dialog .p-dialog-footer {
+  display: flex !important;
+  justify-content: flex-end; /* keep them on right */
+  align-items: center;
+  gap: 32px !important; /* 🔥 change this number */
+}
