@@ -27,11 +27,12 @@ type StudentRecord = {
   quiz1: number;
   quiz2: number;
   quiz3: number;
-  quiz4: number;
   prelim: number;
+  PIT: number;
   midtermwrittenexam: number;
-  assignment1: number;
-  activity1: number;
+  laboratoryactivity1: number;
+  laboratoryactivity2: number;
+  laboratoryactivity3: number;
   midtermlabexam: number;
   midtermGrade: number;
 };
@@ -41,6 +42,16 @@ type ColumnConfig = {
   header: string;
   sortable?: boolean;
 };
+
+const gradeFields: (keyof StudentRecord)[] = [
+  "attendance",
+  "quiz1", "quiz2", "quiz3",
+  "prelim", "PIT",
+  "midtermwrittenexam",
+  "laboratoryactivity1", "laboratoryactivity2", "laboratoryactivity3",
+  "midtermlabexam",
+  "midtermGrade",
+];
 
 export default function AdminUploadGrades() {
   const { classId } = useParams<{ classId: string }>();
@@ -64,27 +75,26 @@ export default function AdminUploadGrades() {
   });
 
   const [classInfo, setClassInfo] = useState<{
-  courseCode: string;
-  yearSection: string;
+    courseCode: string;
+    yearSection: string;
   } | null>(null);
 
   useEffect(() => {
-  if (!classId) return;
+    if (!classId) return;
 
-  const fetchClassInfo = async () => {
-    const classDoc = await getDoc(doc(db, "classes", classId));
+    const fetchClassInfo = async () => {
+      const classDoc = await getDoc(doc(db, "classes", classId));
+      if (classDoc.exists()) {
+        const data = classDoc.data();
+        setClassInfo({
+          courseCode: data.courseCode,
+          yearSection: data.yearSection,
+        });
+      }
+    };
 
-    if (classDoc.exists()) {
-      const data = classDoc.data();
-      setClassInfo({
-        courseCode: data.courseCode,
-        yearSection: data.yearSection,
-      });
-    }
-  };
-
-  fetchClassInfo();
-}, [classId]);
+    fetchClassInfo();
+  }, [classId]);
 
   useEffect(() => {
     if (!classId) return;
@@ -136,27 +146,29 @@ export default function AdminUploadGrades() {
         for (const row of rows) {
           if (!row.idNumber) continue;
 
-          const cleanRow = {
+          const cleanRow: StudentRecord = {
             ...row,
             idNumber: String(row.idNumber).trim(),
             firstName: row.firstName?.trim(),
             lastName: row.lastName?.trim(),
           };
 
-          // Save inside class structure
+          for (const field of gradeFields) {
+            const val = cleanRow[field];
+            if (val === undefined || val === null || val === ("" as unknown)) {
+              (cleanRow as Record<string, unknown>)[field] = -1;
+            }
+          }
+
           await setDoc(
             doc(db, "classes", classId, "students", cleanRow.idNumber),
             cleanRow,
             { merge: true }
           );
 
-          // ALSO save inside flat students collection
           await setDoc(
             doc(db, "students", cleanRow.idNumber),
-            {
-              ...cleanRow,
-              classId: classId,
-            },
+            { ...cleanRow, classId: classId },
             { merge: true }
           );
 
@@ -190,23 +202,17 @@ export default function AdminUploadGrades() {
       message: `Are you sure you want to delete ${rowData.lastName}, ${rowData.firstName}?`,
       header: "Delete Confirmation",
       icon: "pi pi-exclamation-triangle",
-
       acceptLabel: "Yes",
       rejectLabel: "No",
-
       acceptClassName: "custom-yes",
       rejectClassName: "custom-no",
-
       accept: async () => {
         if (!classId) return;
 
         await deleteDoc(
           doc(db, "classes", classId, "students", rowData.idNumber)
         );
-
-        await deleteDoc(
-          doc(db, "students", rowData.idNumber)
-        );
+        await deleteDoc(doc(db, "students", rowData.idNumber));
 
         toast.current?.show({
           severity: "success",
@@ -229,15 +235,16 @@ export default function AdminUploadGrades() {
     { field: "quiz1", header: "Quiz 1" },
     { field: "quiz2", header: "Quiz 2" },
     { field: "quiz3", header: "Quiz 3" },
-    { field: "quiz4", header: "Quiz 4" },
     { field: "prelim", header: "Prelim" },
-    { field: "assignment1", header: "Assignment" },
-    { field: "activity1", header: "Activity" },
+    { field: "PIT", header: "PIT" },
+    { field: "laboratoryactivity1", header: "Lab Activity 1" },
+    { field: "laboratoryactivity2", header: "Lab Activity 2" },
+    { field: "laboratoryactivity3", header: "Lab Activity 3" },
   ];
 
   const finalColumns: ColumnConfig[] = [
     { field: "midtermwrittenexam", header: "Midterm Written" },
-    { field: "midtermlabexam", header: "Midterm Lab" },
+    { field: "midtermlabexam", header: "Midterm Lab Exam" },
     { field: "midtermGrade", header: "Midterm Grade" },
   ];
 
@@ -249,7 +256,15 @@ export default function AdminUploadGrades() {
     <div className="p-6">
       <Toast ref={toast} position="top-right" />
       <ConfirmDialog />
-      <Tooltip target=".delete-btn" appendTo={document.body} showDelay={200} hideDelay={100}/>
+      <Tooltip
+        target=".delete-btn"
+        content="Delete Student"
+        position="left"
+        mouseTrack
+        mouseTrackLeft={15}
+        showDelay={200}
+        hideDelay={100}
+      />
 
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold text-blue-700">
@@ -319,9 +334,7 @@ export default function AdminUploadGrades() {
         >
           <i
             className={`pi text-lg ${
-              showAssessment
-                ? "pi-angle-double-left"
-                : "pi-angle-double-right"
+              showAssessment ? "pi-angle-double-left" : "pi-angle-double-right"
             }`}
           ></i>
         </button>
@@ -350,10 +363,7 @@ export default function AdminUploadGrades() {
 
             await setDoc(
               doc(db, "students", updated.idNumber),
-              {
-                ...updated,
-                classId: classId,
-              },
+              { ...updated, classId: classId },
               { merge: true }
             );
 
@@ -396,30 +406,54 @@ export default function AdminUploadGrades() {
             />
           ))}
 
+          {/* Single Actions column with rowEditor prop to keep edit function working */}
           <Column
             rowEditor
-            header={() => (
-              <div style={{ width: "100%", textAlign: "center" }}>
-                Actions
-              </div>
-            )}
+            header={
+              <div className="w-full text-center font-bold">Actions</div>
+            }
+            headerStyle={{ textAlign: "center" }}
             bodyStyle={{ textAlign: "center" }}
-            style={{ width: "90px" }}
-          />
+            style={{ width: "150px" }}
+            body={(rowData: StudentRecord, options) => (
+              <div className="flex items-center justify-center gap-3">
+                {options.rowEditor?.editing ? (
+                  <>
+                    <button
+                      onClick={options.rowEditor?.onSaveClick}
+                      className="p-2 bg-green-500 text-white rounded-full hover:bg-green-600"
+                    >
+                      <i className="pi pi-check"></i>
+                    </button>
+                    <button
+                      onClick={options.rowEditor?.onCancelClick}
+                      className="p-2 bg-gray-400 text-white rounded-full hover:bg-gray-500"
+                    >
+                      <i className="pi pi-times"></i>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={options.rowEditor?.onInitClick}
+                    className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600"
+                  >
+                    <i className="pi pi-pencil"></i>
+                  </button>
+                )}
 
-          <Column
-            header=""
-            bodyStyle={{ textAlign: "center" }}
-            style={{ width: "60px" }}
-            body={(rowData: StudentRecord) => (
-              <button
-                disabled={Object.keys(editingRows).length > 0}
-                onClick={() => confirmDelete(rowData)}
-                className="delete-btn p-2 bg-red-500 text-white rounded-full hover:bg-red-600 disabled:opacity-50"
-                data-pr-tooltip="Delete Student"
-              >
-                <i className="pi pi-trash"></i>
-              </button>
+                <span
+                  className="delete-btn"
+                  style={{ display: "inline-block", cursor: "pointer" }}
+                >
+                  <button
+                    disabled={!!editingRows[rowData.idNumber]}
+                    onClick={() => confirmDelete(rowData)}
+                    className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 disabled:opacity-50"
+                  >
+                    <i className="pi pi-trash"></i>
+                  </button>
+                </span>
+              </div>
             )}
           />
         </DataTable>

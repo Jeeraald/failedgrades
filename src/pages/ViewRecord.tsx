@@ -7,14 +7,15 @@ interface StudentData {
   firstName: string;
   lastName: string;
   attendance: number | string;
-  activity1: number | string;
-  assignment1: number | string;
   quiz1: number | string;
   quiz2: number | string;
   quiz3: number | string;
-  quiz4: number | string;
   prelim: number | string;
+  PIT: number | string;
   midtermwrittenexam: number | string;
+  laboratoryactivity1: number | string;
+  laboratoryactivity2: number | string;
+  laboratoryactivity3: number | string;
   midtermlabexam: number | string;
   midtermGrade: number | string;
 }
@@ -22,7 +23,7 @@ interface StudentData {
 export default function ViewRecordPage() {
   const navigate = useNavigate();
 
-  const normalizeNumber = (val: unknown, fallback = 0): number => {
+  const normalizeNumber = (val: unknown, fallback = -1): number => {
     if (val === undefined || val === null || val === "") return fallback;
     const n = Number(val);
     return Number.isNaN(n) ? fallback : n;
@@ -44,14 +45,15 @@ export default function ViewRecordPage() {
       firstName: String(parsed.firstName),
       lastName: String(parsed.lastName),
       attendance: normalizeNumber(parsed.attendance),
-      activity1: normalizeNumber(parsed.activity1),
-      assignment1: normalizeNumber(parsed.assignment1),
       quiz1: normalizeNumber(parsed.quiz1),
       quiz2: normalizeNumber(parsed.quiz2),
       quiz3: normalizeNumber(parsed.quiz3),
-      quiz4: normalizeNumber(parsed.quiz4),
       prelim: normalizeNumber(parsed.prelim),
+      PIT: normalizeNumber(parsed.PIT),
       midtermwrittenexam: normalizeNumber(parsed.midtermwrittenexam),
+      laboratoryactivity1: normalizeNumber(parsed.laboratoryactivity1),
+      laboratoryactivity2: normalizeNumber(parsed.laboratoryactivity2),
+      laboratoryactivity3: normalizeNumber(parsed.laboratoryactivity3),
       midtermlabexam: normalizeNumber(parsed.midtermlabexam),
       midtermGrade: normalizeNumber(parsed.midtermGrade),
     };
@@ -69,31 +71,23 @@ export default function ViewRecordPage() {
         height: window.innerHeight,
       });
     };
-
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   const gradeNum = Number(studentData?.midtermGrade);
   const isPassed = !Number.isNaN(gradeNum) && gradeNum < 3.25;
-
-  const gradeColor = isPassed
-    ? "text-green-600 font-bold"
-    : "text-red-600 font-bold";
+  const gradeColor = isPassed ? "text-green-600 font-bold" : "text-red-600 font-bold";
 
   const [showConfetti, setShowConfetti] = useState(isPassed);
 
   useEffect(() => {
     if (isPassed) {
-      const timer = setTimeout(() => {
-        setShowConfetti(false);
-      }, 10000);
-
+      const timer = setTimeout(() => setShowConfetti(false), 10000);
       return () => clearTimeout(timer);
     }
   }, [isPassed]);
 
-  // ✅ ADDED: Inactivity Auto Redirect (10 Minutes)
   useEffect(() => {
     if (!studentData) return;
 
@@ -132,9 +126,7 @@ export default function ViewRecordPage() {
   const formatScore = (value: number | string) => {
     const num = Number(value);
     if (!Number.isNaN(num)) {
-      if (num === -1) {
-        return <span className="text-red-600 italic">Missed</span>;
-      }
+      if (num === -1) return <span className="text-red-600 italic">Missed</span>;
       return num;
     }
     return value;
@@ -182,90 +174,72 @@ export default function ViewRecordPage() {
               </tr>
             </thead>
             <tbody>
+
+              {/* LECTURE 67% */}
               <tr>
-                <td className="px-4 py-2 border font-semibold" rowSpan={7}>
+                <td className="px-4 py-2 border font-semibold" rowSpan={6}>
                   Lecture (67%)
                 </td>
                 <td className="px-4 py-2 border font-semibold">20%</td>
                 <td className="px-4 py-2 border">Attendance</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.attendance)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.attendance)}</td>
               </tr>
 
               <tr>
-                <td className="px-4 py-2 border font-semibold" rowSpan={5}>
-                  40%
-                </td>
+                <td className="px-4 py-2 border font-semibold" rowSpan={4}>40%</td>
                 <td className="px-4 py-2 border">Quiz 1</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz1)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.quiz1)}</td>
               </tr>
-
               <tr>
                 <td className="px-4 py-2 border">Quiz 2</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz2)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.quiz2)}</td>
               </tr>
-
               <tr>
                 <td className="px-4 py-2 border">Quiz 3</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz3)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.quiz3)}</td>
               </tr>
-
-              <tr>
-                <td className="px-4 py-2 border">Quiz 4</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz4)}
-                </td>
-              </tr>
-
               <tr>
                 <td className="px-4 py-2 border">Prelim</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.prelim)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.prelim)}</td>
               </tr>
 
               <tr>
                 <td className="px-4 py-2 border font-semibold">40%</td>
-                <td className="px-4 py-2 border">Midterm Exam</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.midtermwrittenexam)}
-                </td>
+                <td className="px-4 py-2 border">Midterm Written Exam</td>
+                <td className="px-4 py-2 border">{formatScore(studentData.midtermwrittenexam)}</td>
               </tr>
 
+              {/* LABORATORY 33% */}
               <tr className="bg-gray-50">
-                <td className="px-4 py-2 border font-semibold" rowSpan={3}>
+                <td className="px-4 py-2 border font-semibold" rowSpan={5}>
                   Laboratory (33%)
                 </td>
-                <td className="px-4 py-2 border font-semibold">30%</td>
-                <td className="px-4 py-2 border">Assignment 1</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.assignment1)}
-                </td>
+                <td className="px-4 py-2 border font-semibold" rowSpan={3}>30%</td>
+                <td className="px-4 py-2 border">Laboratory Activity 1</td>
+                <td className="px-4 py-2 border">{formatScore(studentData.laboratoryactivity1)}</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-2 border">Laboratory Activity 2</td>
+                <td className="px-4 py-2 border">{formatScore(studentData.laboratoryactivity2)}</td>
+              </tr>
+              <tr className="bg-gray-50">
+                <td className="px-4 py-2 border">Laboratory Activity 3</td>
+                <td className="px-4 py-2 border">{formatScore(studentData.laboratoryactivity3)}</td>
               </tr>
 
               <tr className="bg-gray-50">
                 <td className="px-4 py-2 border font-semibold">30%</td>
-                <td className="px-4 py-2 border">Activity 1</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.activity1)}
-                </td>
+                <td className="px-4 py-2 border">PIT</td>
+                <td className="px-4 py-2 border">{formatScore(studentData.PIT)}</td>
               </tr>
 
               <tr className="bg-gray-50">
                 <td className="px-4 py-2 border font-semibold">40%</td>
                 <td className="px-4 py-2 border">Midterm Lab Exam</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.midtermlabexam)}
-                </td>
+                <td className="px-4 py-2 border">{formatScore(studentData.midtermlabexam)}</td>
               </tr>
 
+              {/* MIDTERM GRADE */}
               <tr className="bg-blue-100 font-bold">
                 <td className="px-4 py-2 border text-right" colSpan={3}>
                   Midterm Grade
@@ -290,7 +264,6 @@ export default function ViewRecordPage() {
             Back to Login
           </button>
         </div>
-
       </div>
     </div>
   );
