@@ -13,11 +13,11 @@ import { db } from "../firebase/firebaseConfig";
 import { Toast } from "primereact/toast";
 import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
 import { Tooltip } from "primereact/tooltip";
-
 import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
-import type { DataTableFilterMeta, SortOrder } from "primereact/datatable";
-import { FilterMatchMode } from "primereact/api";
+import { Paginator } from "primereact/paginator";
+import type { PaginatorPageChangeEvent } from "primereact/paginator";
+import type { SortOrder } from "primereact/datatable";
 
 type StudentRecord = {
   idNumber: string;
@@ -43,15 +43,20 @@ type ColumnConfig = {
   sortable?: boolean;
 };
 
-const gradeFields: (keyof StudentRecord)[] = [
-  "attendance",
-  "quiz1", "quiz2", "quiz3",
-  "prelim", "PIT",
-  "midtermwrittenexam",
-  "laboratoryactivity1", "laboratoryactivity2", "laboratoryactivity3",
-  "midtermlabexam",
-  "midtermGrade",
-];
+const headerMap: Record<string, keyof StudentRecord> = {
+  "Attendance": "attendance",
+  "Quiz 1": "quiz1",
+  "Quiz 2": "quiz2",
+  "Quiz 3": "quiz3",
+  "Prelim": "prelim",
+  "PIT": "PIT",
+  "Midterm Written Exam": "midtermwrittenexam",
+  "Laboratory Activity 1": "laboratoryactivity1",
+  "Laboratory Activity 2": "laboratoryactivity2",
+  "Laboratory Activity 3": "laboratoryactivity3",
+  "Midterm Lab Exam": "midtermlabexam",
+  "Midterm Grade": "midtermGrade",
+};
 
 export default function AdminUploadGrades() {
   const { classId } = useParams<{ classId: string }>();
@@ -64,15 +69,15 @@ export default function AdminUploadGrades() {
   const [file, setFile] = useState<File | null>(null);
   const [showAssessment, setShowAssessment] = useState<boolean>(false);
   const [editingRows, setEditingRows] = useState<{ [key: string]: boolean }>({});
+  const [uploading, setUploading] = useState<boolean>(false);
 
   const [sortField, setSortField] = useState<string | undefined>(undefined);
   const [sortOrder, setSortOrder] = useState<SortOrder>(undefined);
 
   const [globalSearch, setGlobalSearch] = useState<string>("");
 
-  const [filters, setFilters] = useState<DataTableFilterMeta>({
-    global: { value: null, matchMode: FilterMatchMode.CONTAINS },
-  });
+  const [first, setFirst] = useState<number>(0);
+  const [rows, setRows] = useState<number>(10);
 
   const [classInfo, setClassInfo] = useState<{
     courseCode: string;
@@ -81,7 +86,6 @@ export default function AdminUploadGrades() {
 
   useEffect(() => {
     if (!classId) return;
-
     const fetchClassInfo = async () => {
       const classDoc = await getDoc(doc(db, "classes", classId));
       if (classDoc.exists()) {
@@ -92,13 +96,11 @@ export default function AdminUploadGrades() {
         });
       }
     };
-
     fetchClassInfo();
   }, [classId]);
 
   useEffect(() => {
     if (!classId) return;
-
     const unsubscribe = onSnapshot(
       collection(db, "classes", classId, "students"),
       (snapshot) => {
@@ -109,29 +111,45 @@ export default function AdminUploadGrades() {
         setRecords(data);
       }
     );
-
     return () => unsubscribe();
   }, [classId]);
 
   const handleGlobalSearch = (value: string) => {
     setGlobalSearch(value);
-    setFilters({
-      global: { value, matchMode: FilterMatchMode.CONTAINS },
-    });
+    setFirst(0);
   };
 
   const resetTable = () => {
     setSortField(undefined);
     setSortOrder(undefined);
     setGlobalSearch("");
-    setFilters({
-      global: { value: null, matchMode: FilterMatchMode.CONTAINS },
-    });
+    setFirst(0);
+    setRows(10);
+  };
+
+  // Manually filter records based on search
+  const filteredRecords = records.filter((r) => {
+    const search = globalSearch.toLowerCase();
+    if (!search) return true;
+    return (
+      r.idNumber.toLowerCase().includes(search) ||
+      r.lastName.toLowerCase().includes(search) ||
+      r.firstName.toLowerCase().includes(search)
+    );
+  });
+
+  // Slice for current page
+  const paginatedRecords = filteredRecords.slice(first, first + rows);
+
+  const onPageChange = (event: PaginatorPageChangeEvent) => {
+    setFirst(event.first);
+    setRows(event.rows);
   };
 
   const handleUpload = async () => {
     if (!file || !classId) return;
 
+    setUploading(true);
     const reader = new FileReader();
 
     reader.onload = async (e) => {
@@ -139,59 +157,115 @@ export default function AdminUploadGrades() {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array" });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json<StudentRecord>(sheet);
+
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+          defval: "",
+        });
+
+        console.log("Total rows parsed:", rows.length);
+        if (rows.length > 0) console.log("First row:", rows[0]);
 
         let success = 0;
+        const skipped: unknown[] = [];
 
         for (const row of rows) {
-          if (!row.idNumber) continue;
+          const rawId = row["ID Number"];
+
+          if (!rawId || String(rawId).trim() === "") {
+            skipped.push(row);
+            continue;
+          }
+
+          const idNumber = String(rawId).trim();
 
           const cleanRow: StudentRecord = {
-            ...row,
-            idNumber: String(row.idNumber).trim(),
-            firstName: row.firstName?.trim(),
-            lastName: row.lastName?.trim(),
+            idNumber,
+            lastName: String(row["Last Name"] ?? "").trim(),
+            firstName: String(row["First Name"] ?? "").trim(),
+            attendance: -1,
+            quiz1: -1,
+            quiz2: -1,
+            quiz3: -1,
+            prelim: -1,
+            PIT: -1,
+            midtermwrittenexam: -1,
+            laboratoryactivity1: -1,
+            laboratoryactivity2: -1,
+            laboratoryactivity3: -1,
+            midtermlabexam: -1,
+            midtermGrade: -1,
           };
 
-          for (const field of gradeFields) {
-            const val = cleanRow[field];
-            if (val === undefined || val === null || val === ("" as unknown)) {
-              (cleanRow as Record<string, unknown>)[field] = -1;
+          for (const [excelHeader, fieldName] of Object.entries(headerMap)) {
+            const raw = row[excelHeader];
+            if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+              const parsed = Number(raw);
+              if (!isNaN(parsed)) {
+                (cleanRow as Record<string, unknown>)[fieldName] = parsed;
+              }
             }
           }
 
-          await setDoc(
-            doc(db, "classes", classId, "students", cleanRow.idNumber),
-            cleanRow,
-            { merge: true }
-          );
-
-          await setDoc(
-            doc(db, "students", cleanRow.idNumber),
-            { ...cleanRow, classId: classId },
-            { merge: true }
-          );
-
-          success++;
+          try {
+            await setDoc(
+              doc(db, "classes", classId, "students", idNumber),
+              cleanRow,
+              { merge: true }
+            );
+            await setDoc(
+              doc(db, "students", idNumber),
+              { ...cleanRow, classId },
+              { merge: true }
+            );
+            success++;
+          } catch (writeError) {
+            console.error(`Failed to write student ${idNumber}:`, writeError);
+            skipped.push(row);
+          }
         }
 
-        toast.current?.show({
-          severity: "success",
-          summary: "Upload Successful",
-          detail: `${success} records uploaded.`,
-          life: 3000,
-        });
+        console.log("Skipped rows:", skipped);
 
-        setFile(null);
+        if (success > 0) {
+          toast.current?.show({
+            severity: "success",
+            summary: "Upload Successful",
+            detail: `${success} record(s) uploaded.${
+              skipped.length > 0 ? ` ${skipped.length} row(s) skipped.` : ""
+            }`,
+            life: 4000,
+          });
+        } else {
+          toast.current?.show({
+            severity: "warn",
+            summary: "Nothing Uploaded",
+            detail: `0 records uploaded. ${skipped.length} row(s) skipped. Check console.`,
+            life: 5000,
+          });
+        }
       } catch (error) {
-        console.error(error);
+        console.error("Upload error:", error);
         toast.current?.show({
           severity: "error",
           summary: "Upload Failed",
-          detail: "Invalid Excel file.",
-          life: 3000,
+          detail: `Error: ${String(error)}`,
+          life: 5000,
         });
+      } finally {
+        setFile(null);
+        setUploading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
+    };
+
+    reader.onerror = () => {
+      toast.current?.show({
+        severity: "error",
+        summary: "File Read Error",
+        detail: "Could not read the file. Please try again.",
+        life: 4000,
+      });
+      setUploading(false);
     };
 
     reader.readAsArrayBuffer(file);
@@ -208,12 +282,8 @@ export default function AdminUploadGrades() {
       rejectClassName: "custom-no",
       accept: async () => {
         if (!classId) return;
-
-        await deleteDoc(
-          doc(db, "classes", classId, "students", rowData.idNumber)
-        );
+        await deleteDoc(doc(db, "classes", classId, "students", rowData.idNumber));
         await deleteDoc(doc(db, "students", rowData.idNumber));
-
         toast.current?.show({
           severity: "success",
           summary: "Record Deleted Successfully",
@@ -289,7 +359,6 @@ export default function AdminUploadGrades() {
           >
             Reset
           </button>
-
           <input
             type="text"
             placeholder="Search..."
@@ -308,18 +377,40 @@ export default function AdminUploadGrades() {
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
 
-          {file && <span>{file.name}</span>}
+          {file && (
+            <span className="text-sm text-gray-600 max-w-xs truncate">
+              {file.name}
+            </span>
+          )}
+
+          {file && !uploading && (
+            <button
+              onClick={() => {
+                setFile(null);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+              className="px-3 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+            >
+              Cancel
+            </button>
+          )}
 
           <button
+            disabled={uploading}
             onClick={() => {
               if (!file) fileInputRef.current?.click();
               else handleUpload();
             }}
-            className={`px-6 py-2 text-white rounded ${
-              file ? "bg-green-600" : "bg-blue-600"
+            className={`px-6 py-2 text-white rounded flex items-center gap-2 ${
+              uploading
+                ? "bg-gray-400 cursor-not-allowed"
+                : file
+                ? "bg-green-600 hover:bg-green-700"
+                : "bg-blue-600 hover:bg-blue-700"
             }`}
           >
-            {file ? "Upload" : "Choose File"}
+            {uploading && <i className="pi pi-spin pi-spinner text-sm"></i>}
+            {uploading ? "Uploading..." : file ? "Upload" : "Choose File"}
           </button>
         </div>
       </div>
@@ -340,9 +431,7 @@ export default function AdminUploadGrades() {
         </button>
 
         <DataTable
-          value={records}
-          paginator
-          rows={10}
+          value={paginatedRecords}
           showGridlines
           scrollable
           scrollHeight="400px"
@@ -352,21 +441,17 @@ export default function AdminUploadGrades() {
           onRowEditChange={(e) => setEditingRows(e.data)}
           onRowEditComplete={async (e) => {
             if (!classId) return;
-
             const updated = e.newData as StudentRecord;
-
             await setDoc(
               doc(db, "classes", classId, "students", updated.idNumber),
               updated,
               { merge: true }
             );
-
             await setDoc(
               doc(db, "students", updated.idNumber),
               { ...updated, classId: classId },
               { merge: true }
             );
-
             toast.current?.show({
               severity: "success",
               summary: "Edited Successfully",
@@ -380,8 +465,6 @@ export default function AdminUploadGrades() {
             setSortField(e.sortField);
             setSortOrder(e.sortOrder as SortOrder);
           }}
-          filters={filters}
-          globalFilterFields={["idNumber", "lastName", "firstName"]}
         >
           {visibleColumns.map((col) => (
             <Column
@@ -406,12 +489,9 @@ export default function AdminUploadGrades() {
             />
           ))}
 
-          {/* Single Actions column with rowEditor prop to keep edit function working */}
           <Column
             rowEditor
-            header={
-              <div className="w-full text-center font-bold">Actions</div>
-            }
+            header={<div className="w-full text-center font-bold">Actions</div>}
             headerStyle={{ textAlign: "center" }}
             bodyStyle={{ textAlign: "center" }}
             style={{ width: "150px" }}
@@ -440,7 +520,6 @@ export default function AdminUploadGrades() {
                     <i className="pi pi-pencil"></i>
                   </button>
                 )}
-
                 <span
                   className="delete-btn"
                   style={{ display: "inline-block", cursor: "pointer" }}
@@ -457,6 +536,16 @@ export default function AdminUploadGrades() {
             )}
           />
         </DataTable>
+
+        {/* ✅ PrimeReact Paginator */}
+        <Paginator
+          first={first}
+          rows={rows}
+          totalRecords={filteredRecords.length}
+          rowsPerPageOptions={[10, 20, 30, 40]}
+          onPageChange={onPageChange}
+          className="mt-2"
+        />
       </div>
     </div>
   );

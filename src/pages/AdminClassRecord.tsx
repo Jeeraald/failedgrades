@@ -33,7 +33,6 @@ export default function AdminClassRecord() {
   const toast = useRef<Toast>(null);
   const navigate = useNavigate();
 
-  // 🔥 Load classes
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "classes"), (snapshot) => {
       const data: ClassItem[] = snapshot.docs.map((docSnap) => ({
@@ -62,7 +61,6 @@ export default function AdminClassRecord() {
     setShowModal(true);
   };
 
-  // ✅ SAFE SAVE
   const handleSave = async () => {
     if (!courseCode || !subjectName || !yearSection) {
       toast.current?.show({
@@ -108,22 +106,24 @@ export default function AdminClassRecord() {
       setShowModal(false);
     } catch (error) {
       console.error(error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Error",
+        detail: "Something went wrong. Please try again.",
+        life: 3000,
+      });
     }
   };
 
-  // ✅ SAFE DELETE (Now using ConfirmDialog)
   const handleDelete = async (id: string) => {
     confirmDialog({
       message: "Delete this class and all students inside it?",
       header: "Delete Confirmation",
       icon: "pi pi-exclamation-triangle",
-
       acceptLabel: "Yes",
       rejectLabel: "No",
-
       acceptClassName: "custom-yes",
       rejectClassName: "custom-no",
-
       accept: async () => {
         try {
           const studentsSnapshot = await getDocs(
@@ -131,11 +131,14 @@ export default function AdminClassRecord() {
           );
 
           for (const studentDoc of studentsSnapshot.docs) {
-            await deleteDoc(
-              doc(db, "classes", id, "students", studentDoc.id)
-            );
+            // ✅ Delete from classes/{id}/students subcollection
+            await deleteDoc(doc(db, "classes", id, "students", studentDoc.id));
+
+            // ✅ Also delete from top-level students collection
+            await deleteDoc(doc(db, "students", studentDoc.id));
           }
 
+          // ✅ Finally delete the class itself
           await deleteDoc(doc(db, "classes", id));
 
           toast.current?.show({
@@ -146,6 +149,12 @@ export default function AdminClassRecord() {
           });
         } catch (error) {
           console.error(error);
+          toast.current?.show({
+            severity: "error",
+            summary: "Delete Failed",
+            detail: "Something went wrong. Please try again.",
+            life: 3000,
+          });
         }
       },
     });
@@ -165,9 +174,7 @@ export default function AdminClassRecord() {
       <Toast ref={toast} position="top-right" />
       <ConfirmDialog />
 
-      <h1 className="text-3xl font-bold mb-6 text-blue-700">
-        Class Records
-      </h1>
+      <h1 className="text-3xl font-bold mb-6 text-blue-700">Class Records</h1>
 
       <div className="flex justify-between items-center mb-6">
         <input
@@ -187,40 +194,42 @@ export default function AdminClassRecord() {
       </div>
 
       <div className="space-y-3">
-        {filteredClasses.map((cls) => (
-          <div
-            key={cls.id}
-            className="border p-4 rounded hover:bg-gray-50 transition flex justify-between items-center"
-          >
+        {filteredClasses.length === 0 ? (
+          <div className="text-center text-gray-400 py-10">
+            No classes found.
+          </div>
+        ) : (
+          filteredClasses.map((cls) => (
             <div
-              onClick={() =>
-                navigate(`/admin/classrecord/${cls.id}`)
-              }
-              className="cursor-pointer"
+              key={cls.id}
+              className="border p-4 rounded hover:bg-gray-50 transition flex justify-between items-center"
             >
-              <strong>{cls.courseCode}</strong> — {cls.yearSection}
-              <div className="text-sm text-gray-600">
-                {cls.subjectName}
+              <div
+                onClick={() => navigate(`/admin/classrecord/${cls.id}`)}
+                className="cursor-pointer"
+              >
+                <strong>{cls.courseCode}</strong> — {cls.yearSection}
+                <div className="text-sm text-gray-600">{cls.subjectName}</div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => openEditModal(cls)}
+                  className="px-3 py-1 bg-yellow-400 text-white rounded hover:bg-yellow-500"
+                >
+                  Edit
+                </button>
+
+                <button
+                  onClick={() => handleDelete(cls.id)}
+                  className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                >
+                  Delete
+                </button>
               </div>
             </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => openEditModal(cls)}
-                className="px-3 py-1 bg-yellow-400 text-white rounded hover:bg-yellow-500"
-              >
-                Edit
-              </button>
-
-              <button
-                onClick={() => handleDelete(cls.id)}
-                className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       {showModal && (
