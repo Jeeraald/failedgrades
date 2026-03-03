@@ -556,7 +556,7 @@ export default function AdminUploadGrades() {
           first={first}
           rows={rows}
           totalRecords={filteredRecords.length}
-          rowsPerPageOptions={[10, 20, 30]}
+          rowsPerPageOptions={[10, 20, 30, 40]}
           onPageChange={onPageChange}
           className="mt-2"
         />
