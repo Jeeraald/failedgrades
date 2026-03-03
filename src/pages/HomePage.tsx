@@ -124,31 +124,43 @@ export default function HomePage() {
         return;
       }
 
+      // ✅ Safely parse numbers — keeps -1 as -1 (Missed), never converts to 0
+      const safeNum = (val: unknown): number => {
+        if (val === undefined || val === null || val === "") return -1;
+        const n = Number(val);
+        return isNaN(n) ? -1 : n;
+      };
+
       const student = {
         idNumber: trimmedId,
         firstName: data.firstName,
         lastName: data.lastName,
-        attendance: Number(data.attendance) || 0,
-        activity1: Number(data.activity1) || 0,
-        assignment1: Number(data.assignment1) || 0,
-        quiz1: Number(data.quiz1) || 0,
-        quiz2: Number(data.quiz2) || 0,
-        quiz3: Number(data.quiz3) || 0,
-        quiz4: Number(data.quiz4) || 0,
-        prelim: Number(data.prelim) || 0,
-        midtermwrittenexam: Number(data.midtermwrittenexam) || 0,
-        midtermlabexam: Number(data.midtermlabexam) || 0,
-        midtermGrade: Number(data.midtermGrade) || 0,
+        courseCode: data.courseCode ?? "",
+        subjectName: data.subjectName ?? "",
+        yearSection: data.yearSection ?? "",
+        attendance: safeNum(data.attendance),
+        quiz1: safeNum(data.quiz1),
+        quiz2: safeNum(data.quiz2),
+        quiz3: safeNum(data.quiz3),
+        prelim: safeNum(data.prelim),
+        PIT: safeNum(data.PIT),
+        midtermwrittenexam: safeNum(data.midtermwrittenexam),
+        laboratoryactivity1: safeNum(data.laboratoryactivity1),
+        laboratoryactivity2: safeNum(data.laboratoryactivity2),
+        laboratoryactivity3: safeNum(data.laboratoryactivity3),
+        midtermlabexam: safeNum(data.midtermlabexam),
+        midtermGrade: safeNum(data.midtermGrade),
         classId: data.classId,
       };
 
       sessionStorage.setItem("studentRecord", JSON.stringify(student));
       setStudentData(student);
 
-      if (student.midtermGrade <= 3.0) {
+      if (student.midtermGrade > -1 && student.midtermGrade < 3.25) {
         setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 4000);
+        setTimeout(() => setShowConfetti(false), 8000);
       }
+
     } catch (err) {
       console.error(err);
       setError("Database error.");
@@ -176,10 +188,8 @@ export default function HomePage() {
       {showConfetti && <Confetti />}
 
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
-
         {!studentData ? (
           <>
-            {/* HEADER */}
             <h1 className="text-4xl font-bold text-center text-blue-700 mb-2">
               Grade Consultation
             </h1>
@@ -189,8 +199,6 @@ export default function HomePage() {
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-5">
-
-              {/* First Name */}
               <div>
                 <label className="block font-semibold text-gray-700 mb-2">
                   First Name
@@ -207,7 +215,6 @@ export default function HomePage() {
                 />
               </div>
 
-              {/* Last Name */}
               <div>
                 <label className="block font-semibold text-gray-700 mb-2">
                   Last Name
@@ -224,7 +231,6 @@ export default function HomePage() {
                 />
               </div>
 
-              {/* Student ID */}
               <div>
                 <label className="block font-semibold text-gray-700 mb-2">
                   Student ID
@@ -250,9 +256,9 @@ export default function HomePage() {
               <p className="text-red-500 mt-4 text-center">{error}</p>
             )}
 
-            {/* FOOTER */}
             <p className="text-center text-gray-500 mt-10 text-sm">
-              Made by <span className="font-semibold text-blue-600">Sir Jerald</span>
+              Made by{" "}
+              <span className="font-semibold text-blue-600">Sir Jerald</span>
             </p>
           </>
         ) : (

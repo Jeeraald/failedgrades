@@ -6,18 +6,21 @@ interface StudentData {
   idNumber: string;
   firstName: string;
   lastName: string;
-  attendance: number | string;
-  quiz1: number | string;
-  quiz2: number | string;
-  quiz3: number | string;
-  prelim: number | string;
-  PIT: number | string;
-  midtermwrittenexam: number | string;
-  laboratoryactivity1: number | string;
-  laboratoryactivity2: number | string;
-  laboratoryactivity3: number | string;
-  midtermlabexam: number | string;
-  midtermGrade: number | string;
+  courseCode?: string;
+  subjectName?: string;
+  yearSection?: string;
+  attendance: number;
+  quiz1: number;
+  quiz2: number;
+  quiz3: number;
+  prelim: number;
+  PIT: number;
+  midtermwrittenexam: number;
+  laboratoryactivity1: number;
+  laboratoryactivity2: number;
+  laboratoryactivity3: number;
+  midtermlabexam: number;
+  midtermGrade: number;
 }
 
 export default function ViewRecordPage() {
@@ -44,6 +47,9 @@ export default function ViewRecordPage() {
       idNumber: String(parsed.idNumber),
       firstName: String(parsed.firstName),
       lastName: String(parsed.lastName),
+      courseCode: parsed.courseCode ? String(parsed.courseCode) : undefined,
+      subjectName: parsed.subjectName ? String(parsed.subjectName) : undefined,
+      yearSection: parsed.yearSection ? String(parsed.yearSection) : undefined,
       attendance: normalizeNumber(parsed.attendance),
       quiz1: normalizeNumber(parsed.quiz1),
       quiz2: normalizeNumber(parsed.quiz2),
@@ -76,8 +82,10 @@ export default function ViewRecordPage() {
   }, []);
 
   const gradeNum = Number(studentData?.midtermGrade);
-  const isPassed = !Number.isNaN(gradeNum) && gradeNum < 3.25;
-  const gradeColor = isPassed ? "text-green-600 font-bold" : "text-red-600 font-bold";
+  const isPassed = !Number.isNaN(gradeNum) && gradeNum !== -1 && gradeNum < 3.25;
+  const gradeColor = isPassed
+    ? "text-green-600 font-bold"
+    : "text-red-600 font-bold";
 
   const [showConfetti, setShowConfetti] = useState(isPassed);
 
@@ -123,24 +131,26 @@ export default function ViewRecordPage() {
 
   const fullName = `${studentData.lastName.toUpperCase()}, ${studentData.firstName.toUpperCase()}`;
 
-  const formatScore = (value: number | string) => {
-    const num = Number(value);
-    if (!Number.isNaN(num)) {
-      if (num === -1) return <span className="text-red-600 italic">Missed</span>;
-      return num;
-    }
+  // ✅ Dynamic title from session data
+  const pageTitle =
+    studentData.courseCode && studentData.subjectName
+      ? `${studentData.courseCode} - ${studentData.subjectName} — Midterm Record`
+      : studentData.courseCode
+      ? `${studentData.courseCode} — Midterm Record`
+      : "Midterm Grade Record";
+
+  const formatScore = (value: number) => {
+    if (value === -1) return <span className="text-red-500 italic">Missed</span>;
     return value;
   };
 
-  const formatMidtermGrade = (value: number | string) => {
-    const num = Number(value);
-    if (Number.isNaN(num)) return "0.00";
-    return num.toFixed(2);
+  const formatMidtermGrade = (value: number) => {
+    if (value === -1) return "N/A";
+    return value.toFixed(2);
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-white p-4 relative">
-
       {showConfetti && (
         <Confetti
           width={windowSize.width}
@@ -152,9 +162,16 @@ export default function ViewRecordPage() {
       )}
 
       <div className="bg-white rounded-3xl shadow-lg w-full max-w-4xl p-6 border border-gray-200 relative z-10">
-        <h1 className="text-2xl md:text-3xl font-bold text-blue-700 text-center mb-6">
-          Computer Programming 1 - Midterm Record
+        {/* ✅ Dynamic title */}
+        <h1 className="text-2xl md:text-3xl font-bold text-blue-700 text-center mb-1">
+          {pageTitle}
         </h1>
+
+        {studentData.yearSection && (
+          <p className="text-center text-gray-500 text-sm mb-4">
+            {studentData.yearSection}
+          </p>
+        )}
 
         <div className="mb-6 text-black text-center">
           <p className="font-semibold">
@@ -251,6 +268,15 @@ export default function ViewRecordPage() {
 
             </tbody>
           </table>
+        </div>
+
+        {/* Pass/Fail message */}
+        <div className="mt-4 text-center text-sm font-semibold">
+          {gradeNum !== -1 && (
+            isPassed
+              ? <span className="text-green-600">🎉 Congratulations! You passed!</span>
+              : <span className="text-red-500">You did not pass this term. Keep going!</span>
+          )}
         </div>
 
         <div className="mt-6 flex justify-center">

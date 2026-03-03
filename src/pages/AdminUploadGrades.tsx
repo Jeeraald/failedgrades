@@ -43,6 +43,7 @@ type ColumnConfig = {
   sortable?: boolean;
 };
 
+// ✅ Exact headers from your Excel file
 const headerMap: Record<string, keyof StudentRecord> = {
   "Attendance": "attendance",
   "Quiz 1": "quiz1",
@@ -81,6 +82,7 @@ export default function AdminUploadGrades() {
 
   const [classInfo, setClassInfo] = useState<{
     courseCode: string;
+    subjectName: string;
     yearSection: string;
   } | null>(null);
 
@@ -92,6 +94,7 @@ export default function AdminUploadGrades() {
         const data = classDoc.data();
         setClassInfo({
           courseCode: data.courseCode,
+          subjectName: data.subjectName,
           yearSection: data.yearSection,
         });
       }
@@ -127,7 +130,6 @@ export default function AdminUploadGrades() {
     setRows(10);
   };
 
-  // Manually filter records based on search
   const filteredRecords = records.filter((r) => {
     const search = globalSearch.toLowerCase();
     if (!search) return true;
@@ -138,7 +140,6 @@ export default function AdminUploadGrades() {
     );
   });
 
-  // Slice for current page
   const paginatedRecords = filteredRecords.slice(first, first + rows);
 
   const onPageChange = (event: PaginatorPageChangeEvent) => {
@@ -196,6 +197,7 @@ export default function AdminUploadGrades() {
             midtermGrade: -1,
           };
 
+          // ✅ Map Excel headers to StudentRecord fields
           for (const [excelHeader, fieldName] of Object.entries(headerMap)) {
             const raw = row[excelHeader];
             if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
@@ -212,9 +214,16 @@ export default function AdminUploadGrades() {
               cleanRow,
               { merge: true }
             );
+            // ✅ Also save courseCode, subjectName, yearSection so ViewRecordPage can use them
             await setDoc(
               doc(db, "students", idNumber),
-              { ...cleanRow, classId },
+              {
+                ...cleanRow,
+                classId,
+                courseCode: classInfo?.courseCode ?? "",
+                subjectName: classInfo?.subjectName ?? "",
+                yearSection: classInfo?.yearSection ?? "",
+              },
               { merge: true }
             );
             success++;
@@ -449,7 +458,13 @@ export default function AdminUploadGrades() {
             );
             await setDoc(
               doc(db, "students", updated.idNumber),
-              { ...updated, classId: classId },
+              {
+                ...updated,
+                classId,
+                courseCode: classInfo?.courseCode ?? "",
+                subjectName: classInfo?.subjectName ?? "",
+                yearSection: classInfo?.yearSection ?? "",
+              },
               { merge: true }
             );
             toast.current?.show({
@@ -537,12 +552,11 @@ export default function AdminUploadGrades() {
           />
         </DataTable>
 
-        {/* ✅ PrimeReact Paginator */}
         <Paginator
           first={first}
           rows={rows}
           totalRecords={filteredRecords.length}
-          rowsPerPageOptions={[10, 20, 30, 40]}
+          rowsPerPageOptions={[10, 20, 30]}
           onPageChange={onPageChange}
           className="mt-2"
         />
