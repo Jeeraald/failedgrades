@@ -43,7 +43,6 @@ type ColumnConfig = {
   sortable?: boolean;
 };
 
-// ✅ Exact headers from your Excel file
 const headerMap: Record<string, keyof StudentRecord> = {
   "Attendance": "attendance",
   "Quiz 1": "quiz1",
@@ -65,12 +64,14 @@ export default function AdminUploadGrades() {
 
   const toast = useRef<Toast | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const infoRef = useRef<HTMLDivElement | null>(null);
 
   const [records, setRecords] = useState<StudentRecord[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [showAssessment, setShowAssessment] = useState<boolean>(false);
   const [editingRows, setEditingRows] = useState<{ [key: string]: boolean }>({});
   const [uploading, setUploading] = useState<boolean>(false);
+  const [showInfo, setShowInfo] = useState<boolean>(false);
 
   const [sortField, setSortField] = useState<string | undefined>(undefined);
   const [sortOrder, setSortOrder] = useState<SortOrder>(undefined);
@@ -85,6 +86,17 @@ export default function AdminUploadGrades() {
     subjectName: string;
     yearSection: string;
   } | null>(null);
+
+  // Close info popover when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (infoRef.current && !infoRef.current.contains(e.target as Node)) {
+        setShowInfo(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     if (!classId) return;
@@ -147,6 +159,33 @@ export default function AdminUploadGrades() {
     setRows(event.rows);
   };
 
+  const downloadTemplate = () => {
+    const templateData = [
+      {
+        "ID Number": "",
+        "Last Name": "",
+        "First Name": "",
+        "Attendance": "",
+        "Quiz 1": "",
+        "Quiz 2": "",
+        "Quiz 3": "",
+        "Prelim": "",
+        "PIT": "",
+        "Midterm Written Exam": "",
+        "Laboratory Activity 1": "",
+        "Laboratory Activity 2": "",
+        "Laboratory Activity 3": "",
+        "Midterm Lab Exam": "",
+        "Midterm Grade": "",
+      },
+    ];
+
+    const worksheet = XLSX.utils.json_to_sheet(templateData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Students");
+    XLSX.writeFile(workbook, "grades_template.xlsx");
+  };
+
   const handleUpload = async () => {
     if (!file || !classId) return;
 
@@ -197,7 +236,6 @@ export default function AdminUploadGrades() {
             midtermGrade: -1,
           };
 
-          // ✅ Map Excel headers to StudentRecord fields
           for (const [excelHeader, fieldName] of Object.entries(headerMap)) {
             const raw = row[excelHeader];
             if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
@@ -214,7 +252,6 @@ export default function AdminUploadGrades() {
               cleanRow,
               { merge: true }
             );
-            // ✅ Also save courseCode, subjectName, yearSection so ViewRecordPage can use them
             await setDoc(
               doc(db, "students", idNumber),
               {
@@ -415,12 +452,53 @@ export default function AdminUploadGrades() {
                 ? "bg-gray-400 cursor-not-allowed"
                 : file
                 ? "bg-green-600 hover:bg-green-700"
-                : "bg-blue-600 hover:bg-blue-700"
+                : "bg-green-600 hover:bg-green-700"
             }`}
           >
             {uploading && <i className="pi pi-spin pi-spinner text-sm"></i>}
-            {uploading ? "Uploading..." : file ? "Upload" : "Choose File"}
+            {!uploading && !file && <i className="pi pi-file-excel text-sm"></i>}
+            {uploading ? "Uploading..." : file ? "Upload" : "Choose Excel File"}
           </button>
+
+          {/* Info icon with popover */}
+          <div className="relative" ref={infoRef}>
+            <button
+              onClick={() => setShowInfo((prev) => !prev)}
+              className="text-blue-500 hover:text-blue-700 transition"
+              title="Upload Info"
+            >
+              <i className="pi pi-info-circle text-xl"></i>
+            </button>
+
+            {showInfo && (
+              <div className="absolute right-0 top-9 z-50 w-72 bg-white border border-gray-200 rounded-xl shadow-lg p-4 text-sm text-gray-700">
+                <p className="font-semibold text-gray-800 mb-2 flex items-center gap-2">
+                  <i className="pi pi-info-circle text-blue-500"></i>
+                  Excel Upload Guide
+                </p>
+                <p className="mb-3 text-gray-600 leading-relaxed">
+                  Upload an <span className="font-medium">.xlsx</span> or{" "}
+                  <span className="font-medium">.xls</span> file containing
+                  student grade records. Make sure the column headers match the
+                  required format.
+                </p>
+                <p className="mb-3 text-gray-600 leading-relaxed">
+                  Not sure about the format? Download the template below and
+                  fill it in with your data.
+                </p>
+                <button
+                  onClick={() => {
+                    downloadTemplate();
+                    setShowInfo(false);
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition"
+                >
+                  <i className="pi pi-download text-sm"></i>
+                  Download Excel Template
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
