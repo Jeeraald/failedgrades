@@ -34,7 +34,7 @@ export default function HomePage() {
       last: "ex: Doe",
       id: "ex: 2022123456",
     }),
-    []
+    [],
   );
 
   const [focused, setFocused] = useState<Record<FocusKeys, boolean>>({
@@ -160,7 +160,6 @@ export default function HomePage() {
         setShowConfetti(true);
         setTimeout(() => setShowConfetti(false), 8000);
       }
-
     } catch (err) {
       console.error(err);
       setError("Database error.");
@@ -252,9 +251,7 @@ export default function HomePage() {
               </button>
             </form>
 
-            {error && (
-              <p className="text-red-500 mt-4 text-center">{error}</p>
-            )}
+            {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
 
             <p className="text-center text-gray-500 mt-10 text-sm">
               Made by{" "}

@@ -44,12 +44,12 @@ type ColumnConfig = {
 };
 
 const headerMap: Record<string, keyof StudentRecord> = {
-  "Attendance": "attendance",
+  Attendance: "attendance",
   "Quiz 1": "quiz1",
   "Quiz 2": "quiz2",
   "Quiz 3": "quiz3",
-  "Prelim": "prelim",
-  "PIT": "PIT",
+  Prelim: "prelim",
+  PIT: "PIT",
   "Midterm Written Exam": "midtermwrittenexam",
   "Laboratory Activity 1": "laboratoryactivity1",
   "Laboratory Activity 2": "laboratoryactivity2",
@@ -69,7 +69,9 @@ export default function AdminUploadGrades() {
   const [records, setRecords] = useState<StudentRecord[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [showAssessment, setShowAssessment] = useState<boolean>(false);
-  const [editingRows, setEditingRows] = useState<{ [key: string]: boolean }>({});
+  const [editingRows, setEditingRows] = useState<{ [key: string]: boolean }>(
+    {},
+  );
   const [uploading, setUploading] = useState<boolean>(false);
   const [showInfo, setShowInfo] = useState<boolean>(false);
 
@@ -124,7 +126,7 @@ export default function AdminUploadGrades() {
           ...(docSnap.data() as Omit<StudentRecord, "idNumber">),
         }));
         setRecords(data);
-      }
+      },
     );
     return () => unsubscribe();
   }, [classId]);
@@ -165,12 +167,12 @@ export default function AdminUploadGrades() {
         "ID Number": "",
         "Last Name": "",
         "First Name": "",
-        "Attendance": "",
+        Attendance: "",
         "Quiz 1": "",
         "Quiz 2": "",
         "Quiz 3": "",
-        "Prelim": "",
-        "PIT": "",
+        Prelim: "",
+        PIT: "",
         "Midterm Written Exam": "",
         "Laboratory Activity 1": "",
         "Laboratory Activity 2": "",
@@ -238,7 +240,11 @@ export default function AdminUploadGrades() {
 
           for (const [excelHeader, fieldName] of Object.entries(headerMap)) {
             const raw = row[excelHeader];
-            if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+            if (
+              raw !== undefined &&
+              raw !== null &&
+              String(raw).trim() !== ""
+            ) {
               const parsed = Number(raw);
               if (!isNaN(parsed)) {
                 (cleanRow as Record<string, unknown>)[fieldName] = parsed;
@@ -250,7 +256,7 @@ export default function AdminUploadGrades() {
             await setDoc(
               doc(db, "classes", classId, "students", idNumber),
               cleanRow,
-              { merge: true }
+              { merge: true },
             );
             await setDoc(
               doc(db, "students", idNumber),
@@ -261,7 +267,7 @@ export default function AdminUploadGrades() {
                 subjectName: classInfo?.subjectName ?? "",
                 yearSection: classInfo?.yearSection ?? "",
               },
-              { merge: true }
+              { merge: true },
             );
             success++;
           } catch (writeError) {
@@ -328,7 +334,9 @@ export default function AdminUploadGrades() {
       rejectClassName: "custom-no",
       accept: async () => {
         if (!classId) return;
-        await deleteDoc(doc(db, "classes", classId, "students", rowData.idNumber));
+        await deleteDoc(
+          doc(db, "classes", classId, "students", rowData.idNumber),
+        );
         await deleteDoc(doc(db, "students", rowData.idNumber));
         toast.current?.show({
           severity: "success",
@@ -451,12 +459,14 @@ export default function AdminUploadGrades() {
               uploading
                 ? "bg-gray-400 cursor-not-allowed"
                 : file
-                ? "bg-green-600 hover:bg-green-700"
-                : "bg-green-600 hover:bg-green-700"
+                  ? "bg-green-600 hover:bg-green-700"
+                  : "bg-green-600 hover:bg-green-700"
             }`}
           >
             {uploading && <i className="pi pi-spin pi-spinner text-sm"></i>}
-            {!uploading && !file && <i className="pi pi-file-excel text-sm"></i>}
+            {!uploading && !file && (
+              <i className="pi pi-file-excel text-sm"></i>
+            )}
             {uploading ? "Uploading..." : file ? "Upload" : "Choose Excel File"}
           </button>
 
@@ -532,7 +542,7 @@ export default function AdminUploadGrades() {
             await setDoc(
               doc(db, "classes", classId, "students", updated.idNumber),
               updated,
-              { merge: true }
+              { merge: true },
             );
             await setDoc(
               doc(db, "students", updated.idNumber),
@@ -543,7 +553,7 @@ export default function AdminUploadGrades() {
                 subjectName: classInfo?.subjectName ?? "",
                 yearSection: classInfo?.yearSection ?? "",
               },
-              { merge: true }
+              { merge: true },
             );
             toast.current?.show({
               severity: "success",
@@ -573,7 +583,7 @@ export default function AdminUploadGrades() {
                     options.editorCallback?.(
                       typeof options.value === "number"
                         ? Number(e.target.value)
-                        : e.target.value
+                        : e.target.value,
                     )
                   }
                   className="border px-2 py-1 w-full"

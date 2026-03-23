@@ -127,7 +127,7 @@ export default function AdminClassRecord() {
       accept: async () => {
         try {
           const studentsSnapshot = await getDocs(
-            collection(db, "classes", id, "students")
+            collection(db, "classes", id, "students"),
           );
 
           for (const studentDoc of studentsSnapshot.docs) {

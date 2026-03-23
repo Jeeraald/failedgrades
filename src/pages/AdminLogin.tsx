@@ -25,9 +25,7 @@ export default function AdminLogin() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-300 p-6">
       <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
-        <h1 className="text-3xl font-bold text-center mb-6">
-          Admin Login
-        </h1>
+        <h1 className="text-3xl font-bold text-center mb-6">Admin Login</h1>
 
         <form onSubmit={handleLogin} className="space-y-4">
           <input
@@ -53,9 +51,7 @@ export default function AdminLogin() {
           </button>
         </form>
 
-        {error && (
-          <p className="text-red-500 mt-4 text-center">{error}</p>
-        )}
+        {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
       </div>
     </div>
   );
