@@ -1,19 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collectionGroup, query, where, getDocs } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
-import { motion, AnimatePresence } from "framer-motion";
-import Confetti from "react-confetti";
 import { useNavigate } from "react-router-dom";
 
 type FocusKeys = "first" | "last" | "id";
-
-interface StudentData {
-  firstName: string;
-  lastName: string;
-  idNumber: string;
-  midtermGrade: number;
-  classId?: string;
-}
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -21,6 +11,7 @@ export default function HomePage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [idNumber, setIdNumber] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const [placeholders, setPlaceholders] = useState<Record<FocusKeys, string>>({
     first: "",
@@ -49,9 +40,7 @@ export default function HomePage() {
     id: false,
   });
 
-  const [studentData, setStudentData] = useState<StudentData | null>(null);
   const [error, setError] = useState("");
-  const [showConfetti, setShowConfetti] = useState(false);
 
   const intervalRef = useRef<number | null>(null);
   const indexRef = useRef(0);
@@ -105,64 +94,227 @@ export default function HomePage() {
       return;
     }
 
-    try {
-      const studentRef = doc(db, "students", trimmedId);
-      const studentSnap = await getDoc(studentRef);
+    setLoading(true);
 
-      if (!studentSnap.exists()) {
-        setError("Student record not found.");
-        return;
+    try {
+      // Step 1: Verify identity via top-level /students/{id} doc
+      let identityFirst = "";
+      let identityLast = "";
+      let verified = false;
+
+      const studentSnap = await getDoc(doc(db, "students", trimmedId));
+      if (studentSnap.exists()) {
+        const d = studentSnap.data() as Record<string, unknown>;
+        if (
+          String(d.firstName ?? "").toLowerCase() === trimmedFirst &&
+          String(d.lastName ?? "").toLowerCase() === trimmedLast
+        ) {
+          verified = true;
+          identityFirst = String(d.firstName ?? "");
+          identityLast = String(d.lastName ?? "");
+        }
       }
 
-      const data = studentSnap.data();
+      // Fallback: check any subcollection if top-level doc missing or name mismatch
+      if (!verified) {
+        try {
+          const q = query(
+            collectionGroup(db, "students"),
+            where("idNumber", "==", trimmedId)
+          );
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const sub = snap.docs[0].data() as Record<string, unknown>;
+            if (
+              String(sub.firstName ?? "").toLowerCase() === trimmedFirst &&
+              String(sub.lastName ?? "").toLowerCase() === trimmedLast
+            ) {
+              verified = true;
+              identityFirst = String(sub.firstName ?? "");
+              identityLast = String(sub.lastName ?? "");
+            }
+          }
+        } catch {
+          // Collection group index not yet ready — ignore
+        }
+      }
 
-      if (
-        data.firstName?.toLowerCase() !== trimmedFirst ||
-        data.lastName?.toLowerCase() !== trimmedLast
-      ) {
+      if (!verified) {
         setError("Invalid name or ID number.");
         return;
       }
 
-      // ✅ Safely parse numbers — keeps -1 as -1 (Missed), never converts to 0
-      const safeNum = (val: unknown): number => {
-        if (val === undefined || val === null || val === "") return -1;
+      // Step 2: Collect ALL class enrollments for this student
+      const safeNum = (val: unknown): number | null => {
+        if (val === undefined || val === null || val === "") return null;
         const n = Number(val);
-        return isNaN(n) ? -1 : n;
+        return isNaN(n) ? null : n;
       };
 
-      const student = {
-        idNumber: trimmedId,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        courseCode: data.courseCode ?? "",
-        subjectName: data.subjectName ?? "",
-        yearSection: data.yearSection ?? "",
-        attendance: safeNum(data.attendance),
-        quiz1: safeNum(data.quiz1),
-        quiz2: safeNum(data.quiz2),
-        quiz3: safeNum(data.quiz3),
-        prelim: safeNum(data.prelim),
-        PIT: safeNum(data.PIT),
-        midtermwrittenexam: safeNum(data.midtermwrittenexam),
-        laboratoryactivity1: safeNum(data.laboratoryactivity1),
-        laboratoryactivity2: safeNum(data.laboratoryactivity2),
-        laboratoryactivity3: safeNum(data.laboratoryactivity3),
-        midtermlabexam: safeNum(data.midtermlabexam),
-        midtermGrade: safeNum(data.midtermGrade),
-        classId: data.classId,
-      };
+      const META_KEYS = new Set([
+        "idNumber", "firstName", "lastName", "instructorUid",
+        "classId", "courseCode", "subjectName", "yearSection",
+      ]);
 
-      sessionStorage.setItem("studentRecord", JSON.stringify(student));
-      setStudentData(student);
-
-      if (student.midtermGrade > -1 && student.midtermGrade < 3.25) {
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 8000);
+      let subDocs: { ref: { path: string }; data: () => Record<string, unknown> }[] = [];
+      try {
+        const q = query(
+          collectionGroup(db, "students"),
+          where("idNumber", "==", trimmedId)
+        );
+        const snap = await getDocs(q);
+        subDocs = snap.docs as typeof subDocs;
+      } catch {
+        // Fall back to top-level doc if collection group query fails
       }
+
+      // If collection group returned nothing but top-level doc exists, build one entry
+      if (subDocs.length === 0 && studentSnap.exists()) {
+        const d = studentSnap.data() as Record<string, unknown>;
+        const syntheticClassId = String(d.classId ?? "");
+        const tsToIsoFallback = (ts: unknown): string | null => {
+          if (!ts) return null;
+          if (typeof ts === "object" && ts !== null && "seconds" in ts)
+            return new Date((ts as { seconds: number }).seconds * 1000).toISOString();
+          if (ts instanceof Date) return ts.toISOString();
+          return null;
+        };
+        const entry: Record<string, unknown> = {
+          classId: syntheticClassId,
+          courseCode: String(d.courseCode ?? ""),
+          subjectName: String(d.subjectName ?? ""),
+          yearSection: String(d.yearSection ?? ""),
+          term: "Midterm",
+          gradesPosted: false,
+          gradesPostedAt: null,
+          idNumber: trimmedId,
+          firstName: identityFirst,
+          lastName: identityLast,
+        };
+        for (const [key, val] of Object.entries(d)) {
+          if (!META_KEYS.has(key)) entry[key] = safeNum(val);
+        }
+        if (syntheticClassId) {
+          try {
+            const classSnap = await getDoc(doc(db, "classes", syntheticClassId));
+            if (classSnap.exists()) {
+              const cls = classSnap.data();
+              if (cls.courseCode) entry.courseCode = cls.courseCode;
+              if (cls.subjectName) entry.subjectName = cls.subjectName;
+              if (cls.yearSection) entry.yearSection = cls.yearSection;
+              if (cls.term) entry.term = cls.term;
+              entry.gradesPosted = cls.gradesPosted === true;
+              entry.gradesPostedAt = tsToIsoFallback(cls.gradesPostedAt);
+            }
+          } catch { /* ignore */ }
+        }
+        sessionStorage.setItem(
+          "enrolledSubjects",
+          JSON.stringify({ idNumber: trimmedId, firstName: identityFirst, lastName: identityLast, classes: [entry] })
+        );
+        navigate("/subject-select");
+        return;
+      }
+
+      if (subDocs.length === 0) {
+        setError("No enrolled classes found.");
+        return;
+      }
+
+      // Convert Firestore Timestamp → ISO string for sessionStorage serialization
+      const tsToIso = (ts: unknown): string | null => {
+        if (!ts) return null;
+        if (typeof ts === "object" && ts !== null && "seconds" in ts)
+          return new Date((ts as { seconds: number }).seconds * 1000).toISOString();
+        if (ts instanceof Date) return ts.toISOString();
+        return null;
+      };
+
+      // Build one entry per class enrollment.
+      // The collection-group query matches BOTH the top-level /students/{id}
+      // collection AND the /classes/{classId}/students/{id} subcollection.
+      // We must only process subcollection docs (4-part path starting with
+      // "classes") and deduplicate by classId to prevent phantom duplicates.
+      const seenClassIds = new Set<string>();
+
+      const rawEntries = await Promise.all(
+        subDocs.map(async (subDoc) => {
+          const pathParts = subDoc.ref.path.split("/");
+          // Accept only "classes/{classId}/students/{studentId}" (4 parts)
+          if (pathParts[0] !== "classes" || pathParts.length !== 4) return null;
+          const classId = pathParts[1];
+          const subData = subDoc.data() as Record<string, unknown>;
+
+          let courseCode = String(subData.courseCode ?? "");
+          let subjectName = String(subData.subjectName ?? "");
+          let yearSection = String(subData.yearSection ?? "");
+          let term = "Midterm";
+          let gradesPosted = false;
+          let gradesPostedAt: string | null = null;
+
+          if (classId) {
+            try {
+              const classSnap = await getDoc(doc(db, "classes", classId));
+              if (classSnap.exists()) {
+                const cls = classSnap.data();
+                if (cls.courseCode) courseCode = cls.courseCode as string;
+                if (cls.subjectName) subjectName = cls.subjectName as string;
+                if (cls.yearSection) yearSection = cls.yearSection as string;
+                if (cls.term) term = cls.term as string;
+                gradesPosted = cls.gradesPosted === true;
+                gradesPostedAt = tsToIso(cls.gradesPostedAt);
+              }
+            } catch { /* ignore */ }
+          }
+
+          const entry: Record<string, unknown> = {
+            classId,
+            courseCode,
+            subjectName,
+            yearSection,
+            term,
+            gradesPosted,
+            gradesPostedAt,
+            idNumber: trimmedId,
+            firstName: identityFirst,
+            lastName: identityLast,
+          };
+
+          for (const [key, val] of Object.entries(subData)) {
+            if (!META_KEYS.has(key)) {
+              entry[key] = safeNum(val);
+            }
+          }
+
+          return entry;
+        })
+      );
+
+      // Remove nulls (non-subcollection docs) and deduplicate by classId
+      const enrolledClasses = rawEntries.filter((e): e is Record<string, unknown> => {
+        if (!e) return false;
+        const cid = String(e.classId ?? "");
+        if (!cid || seenClassIds.has(cid)) return false;
+        seenClassIds.add(cid);
+        return true;
+      });
+
+      sessionStorage.setItem(
+        "enrolledSubjects",
+        JSON.stringify({
+          idNumber: trimmedId,
+          firstName: identityFirst,
+          lastName: identityLast,
+          classes: enrolledClasses,
+        })
+      );
+
+      navigate("/subject-select");
     } catch (err) {
       console.error(err);
       setError("Database error.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -184,117 +336,80 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-200 p-6">
-      {showConfetti && <Confetti />}
-
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
-        {!studentData ? (
-          <>
-            <h1 className="text-4xl font-bold text-center text-blue-700 mb-2">
-              Grade Consultation
-            </h1>
+        <h1 className="text-4xl font-bold text-center text-blue-700 mb-2">
+          Grade Consultation
+        </h1>
 
-            <p className="text-center text-gray-600 mb-8">
-              Please enter your details to access your record
-            </p>
+        <p className="text-center text-gray-600 mb-8">
+          Please enter your details to access your record
+        </p>
 
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div>
-                <label className="block font-semibold text-gray-700 mb-2">
-                  First Name
-                </label>
-                <input
-                  type="text"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  onFocus={() => handleFocus("first")}
-                  onBlur={() => handleBlur("first")}
-                  placeholder={placeholders.first}
-                  className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
-                  required
-                />
-              </div>
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div>
+            <label className="block font-semibold text-gray-700 mb-2">
+              First Name
+            </label>
+            <input
+              type="text"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              onFocus={() => handleFocus("first")}
+              onBlur={() => handleBlur("first")}
+              placeholder={placeholders.first}
+              className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
+              required
+            />
+          </div>
 
-              <div>
-                <label className="block font-semibold text-gray-700 mb-2">
-                  Last Name
-                </label>
-                <input
-                  type="text"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  onFocus={() => handleFocus("last")}
-                  onBlur={() => handleBlur("last")}
-                  placeholder={placeholders.last}
-                  className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
-                  required
-                />
-              </div>
+          <div>
+            <label className="block font-semibold text-gray-700 mb-2">
+              Last Name
+            </label>
+            <input
+              type="text"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              onFocus={() => handleFocus("last")}
+              onBlur={() => handleBlur("last")}
+              placeholder={placeholders.last}
+              className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
+              required
+            />
+          </div>
 
-              <div>
-                <label className="block font-semibold text-gray-700 mb-2">
-                  Student ID
-                </label>
-                <input
-                  type="text"
-                  value={idNumber}
-                  onChange={(e) => setIdNumber(e.target.value)}
-                  onFocus={() => handleFocus("id")}
-                  onBlur={() => handleBlur("id")}
-                  placeholder={placeholders.id}
-                  className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
-                  required
-                />
-              </div>
+          <div>
+            <label className="block font-semibold text-gray-700 mb-2">
+              Student ID
+            </label>
+            <input
+              type="text"
+              value={idNumber}
+              onChange={(e) => setIdNumber(e.target.value)}
+              onFocus={() => handleFocus("id")}
+              onBlur={() => handleBlur("id")}
+              placeholder={placeholders.id}
+              className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-400"
+              required
+            />
+          </div>
 
-              <button className="w-full bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700">
-                View My Grade
-              </button>
-            </form>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 text-white py-3 rounded-xl hover:bg-blue-700 disabled:bg-blue-400 flex items-center justify-center gap-2 transition"
+          >
+            {loading && <i className="pi pi-spin pi-spinner text-sm"></i>}
+            {loading ? "Loading..." : "View My Grades"}
+          </button>
+        </form>
 
-            {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
+        {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
 
-            <p className="text-center text-gray-500 mt-10 text-sm">
-              Made by{" "}
-              <span className="font-semibold text-blue-600">Sir Jerald</span>
-            </p>
-          </>
-        ) : (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0, y: 40 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-center space-y-4"
-            >
-              <h2 className="text-3xl font-bold text-blue-700">
-                Midterm Grade
-              </h2>
-
-              <motion.p
-                className={`text-6xl font-extrabold ${
-                  studentData.midtermGrade >= 3.25
-                    ? "text-red-600"
-                    : "text-green-600"
-                }`}
-              >
-                {studentData.midtermGrade.toFixed(2)}
-              </motion.p>
-
-              <button
-                onClick={() => navigate("/viewrecord")}
-                className="bg-blue-600 text-white px-6 py-3 rounded-xl hover:bg-blue-700"
-              >
-                View My Class Record
-              </button>
-
-              <button
-                onClick={() => setStudentData(null)}
-                className="block mx-auto mt-4 text-gray-600 underline"
-              >
-                Back
-              </button>
-            </motion.div>
-          </AnimatePresence>
-        )}
+        <p className="text-center text-gray-500 mt-10 text-sm">
+          Made by{" "}
+          <span className="font-semibold text-blue-600">Sir Jerald</span>
+        </p>
       </div>
     </div>
   );

@@ -1,69 +1,114 @@
 import { useState, useEffect } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../firebase/firebaseConfig";
 import Confetti from "react-confetti";
+import { useSessionTimeout } from "../utils/useSessionTimeout";
+import SessionTimeoutModal from "../components/SessionTimeoutModal";
 
-interface StudentData {
+// ── Types ────────────────────────────────────────────────────────────────────
+
+type CustomColumn = {
+  key: string;
+  label: string;
+  group: "lecture" | "laboratory";
+  subGroup: string;
+};
+
+interface ClassData {
+  classType: "Lecture" | "Laboratory" | "Both";
+  lecturePercent: number;
+  labPercent: number;
+  term: "Midterm" | "Final" | "Summer";
+  lectureCols?: CustomColumn[];
+  laboratoryCols?: CustomColumn[];
+}
+
+// Dynamic: known string keys + any score field stored by InstructorUploadGrades
+type StudentData = {
   idNumber: string;
   firstName: string;
   lastName: string;
   courseCode?: string;
   subjectName?: string;
   yearSection?: string;
-  attendance: number;
-  quiz1: number;
-  quiz2: number;
-  quiz3: number;
-  prelim: number;
-  PIT: number;
-  midtermwrittenexam: number;
-  laboratoryactivity1: number;
-  laboratoryactivity2: number;
-  laboratoryactivity3: number;
-  midtermlabexam: number;
-  midtermGrade: number;
+  classId?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+};
+
+// ── Default columns (mirrors InstructorUploadGrades defaults) ────────────────
+
+const DEFAULT_LEC_COLS: CustomColumn[] = [
+  { key: "seatWork1",    label: "Seat Work 1",     group: "lecture",    subGroup: "Class Standing (10%)" },
+  { key: "seatWork2",    label: "Seat Work 2",     group: "lecture",    subGroup: "Class Standing (10%)" },
+  { key: "seatWork3",    label: "Seat Work 3",     group: "lecture",    subGroup: "Class Standing (10%)" },
+  { key: "quiz1",        label: "Quiz 1",          group: "lecture",    subGroup: "Quiz/Prelim (40%)" },
+  { key: "quiz2",        label: "Quiz 2",          group: "lecture",    subGroup: "Quiz/Prelim (40%)" },
+  { key: "quiz3",        label: "Quiz 3",          group: "lecture",    subGroup: "Quiz/Prelim (40%)" },
+  { key: "prelimExam",   label: "Prelim Exam",     group: "lecture",    subGroup: "Quiz/Prelim (40%)" },
+  { key: "midWrittenExam", label: "Mid Written Exam", group: "lecture", subGroup: "Midterm Exam (30%)" },
+  { key: "PIT1",         label: "PIT Score",       group: "lecture",    subGroup: "Per Inno Task (20%)" },
+];
+
+const DEFAULT_LAB_COLS: CustomColumn[] = [
+  { key: "laboratory1",  label: "Laboratory 1",   group: "laboratory", subGroup: "Hands on Exercises (30%)" },
+  { key: "laboratory2",  label: "Laboratory 2",   group: "laboratory", subGroup: "Hands on Exercises (30%)" },
+  { key: "laboratory3",  label: "Laboratory 3",   group: "laboratory", subGroup: "Hands on Exercises (30%)" },
+  { key: "problemSet1",  label: "Problem Set 1",  group: "laboratory", subGroup: "Problem Sets (30%)" },
+  { key: "problemSet2",  label: "Problem Set 2",  group: "laboratory", subGroup: "Problem Sets (30%)" },
+  { key: "problemSet3",  label: "Problem Set 3",  group: "laboratory", subGroup: "Problem Sets (30%)" },
+  { key: "midLabExam",   label: "Mid Lab Exam",   group: "laboratory", subGroup: "Lab Major Exam (40%)" },
+];
+
+// ── Session helpers ──────────────────────────────────────────────────────────
+
+function loadStudentFromSession(): StudentData | null {
+  try {
+    const raw = sessionStorage.getItem("studentRecord");
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Record<string, unknown>;
+    if (!p.idNumber || !p.firstName || !p.lastName) {
+      sessionStorage.removeItem("studentRecord");
+      return null;
+    }
+    return {
+      ...p,
+      idNumber:  String(p.idNumber),
+      firstName: String(p.firstName),
+      lastName:  String(p.lastName),
+    } as StudentData;
+  } catch {
+    sessionStorage.removeItem("studentRecord");
+    return null;
+  }
 }
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function groupBySubGroup(cols: CustomColumn[]): { subGroup: string; cols: CustomColumn[] }[] {
+  const map = new Map<string, CustomColumn[]>();
+  for (const col of cols) {
+    if (!map.has(col.subGroup)) map.set(col.subGroup, []);
+    map.get(col.subGroup)!.push(col);
+  }
+  return Array.from(map.entries()).map(([subGroup, cols]) => ({ subGroup, cols }));
+}
+
+function toNum(val: unknown): number | null {
+  if (val === undefined || val === null || val === "") return null;
+  const n = Number(val);
+  return Number.isNaN(n) ? null : n;
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 export default function ViewRecordPage() {
   const navigate = useNavigate();
 
-  const normalizeNumber = (val: unknown, fallback = -1): number => {
-    if (val === undefined || val === null || val === "") return fallback;
-    const n = Number(val);
-    return Number.isNaN(n) ? fallback : n;
-  };
-
-  const [studentData] = useState<StudentData | null>(() => {
-    const record = sessionStorage.getItem("studentRecord");
-    if (!record) return null;
-
-    const parsed = JSON.parse(record) as Partial<StudentData>;
-
-    if (!parsed.idNumber || !parsed.firstName || !parsed.lastName) {
-      sessionStorage.removeItem("studentRecord");
-      return null;
-    }
-
-    return {
-      idNumber: String(parsed.idNumber),
-      firstName: String(parsed.firstName),
-      lastName: String(parsed.lastName),
-      courseCode: parsed.courseCode ? String(parsed.courseCode) : undefined,
-      subjectName: parsed.subjectName ? String(parsed.subjectName) : undefined,
-      yearSection: parsed.yearSection ? String(parsed.yearSection) : undefined,
-      attendance: normalizeNumber(parsed.attendance),
-      quiz1: normalizeNumber(parsed.quiz1),
-      quiz2: normalizeNumber(parsed.quiz2),
-      quiz3: normalizeNumber(parsed.quiz3),
-      prelim: normalizeNumber(parsed.prelim),
-      PIT: normalizeNumber(parsed.PIT),
-      midtermwrittenexam: normalizeNumber(parsed.midtermwrittenexam),
-      laboratoryactivity1: normalizeNumber(parsed.laboratoryactivity1),
-      laboratoryactivity2: normalizeNumber(parsed.laboratoryactivity2),
-      laboratoryactivity3: normalizeNumber(parsed.laboratoryactivity3),
-      midtermlabexam: normalizeNumber(parsed.midtermlabexam),
-      midtermGrade: normalizeNumber(parsed.midtermGrade),
-    };
-  });
+  const [studentData] = useState<StudentData | null>(() => loadStudentFromSession());
+  const [classData, setClassData]     = useState<ClassData | null>(null);
+  const [classLoading, setClassLoading] = useState(!!studentData?.classId);
 
   const [windowSize, setWindowSize] = useState({
     width: window.innerWidth,
@@ -71,90 +116,142 @@ export default function ViewRecordPage() {
   });
 
   useEffect(() => {
-    const handleResize = () => {
-      setWindowSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    const onResize = () =>
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const gradeNum = Number(studentData?.midtermGrade);
-  const isPassed =
-    !Number.isNaN(gradeNum) && gradeNum !== -1 && gradeNum < 3.25;
-  const gradeColor = isPassed
-    ? "text-green-600 font-bold"
-    : "text-red-600 font-bold";
-
-  const [showConfetti, setShowConfetti] = useState(isPassed);
-
+  // Fetch class document — also verifies grades are still posted
   useEffect(() => {
-    if (isPassed) {
-      const timer = setTimeout(() => setShowConfetti(false), 10000);
-      return () => clearTimeout(timer);
-    }
-  }, [isPassed]);
-
-  useEffect(() => {
-    if (!studentData) return;
-
-    let timeout: ReturnType<typeof setTimeout>;
-
-    const resetTimer = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(
-        () => {
+    if (!studentData?.classId) return;
+    getDoc(doc(db, "classes", studentData.classId as string))
+      .then((snap) => {
+        if (!snap.exists() || !snap.data().gradesPosted) {
+          // Grades were unposted after the student last loaded the page — block access
           sessionStorage.removeItem("studentRecord");
-          navigate("/", { replace: true });
-        },
-        10 * 60 * 1000,
-      );
-    };
+          navigate("/subject-select", { replace: true });
+          return;
+        }
+        const d = snap.data();
+        setClassData({
+          classType:      (d.classType      as ClassData["classType"]) || "Both",
+          lecturePercent: d.lecturePercent  ?? 63,
+          labPercent:     d.labPercent      ?? 37,
+          term:           (d.term           as ClassData["term"]) || "Midterm",
+          lectureCols:    Array.isArray(d.lectureCols)    ? d.lectureCols    : undefined,
+          laboratoryCols: Array.isArray(d.laboratoryCols) ? d.laboratoryCols : undefined,
+        });
+        setClassLoading(false);
+      })
+      .catch(() => setClassLoading(false));
+  }, [studentData?.classId, navigate]);
 
-    window.addEventListener("mousemove", resetTimer);
-    window.addEventListener("keydown", resetTimer);
-    window.addEventListener("click", resetTimer);
-    window.addEventListener("scroll", resetTimer);
+  const { showModal: showTimeout, countdown, extendSession, logoutNow } = useSessionTimeout({
+    warningDelayMs: 5 * 60 * 1000,
+    countdownSec: 20,
+    enabled: !!studentData,
+    onLogout: () => {
+      sessionStorage.removeItem("studentRecord");
+      sessionStorage.removeItem("enrolledSubjects");
+      navigate("/", { replace: true });
+    },
+  });
 
-    resetTimer();
+  // ── Derived from class data (safe to compute even when studentData is null) ─
+  const classType    = classData?.classType      ?? "Both";
+  const lecPct       = classData?.lecturePercent ?? 63;
+  const labPct       = classData?.labPercent     ?? 37;
+  const term         = classData?.term           ?? "Midterm";
+  const termGradeKey = term === "Final" ? "finalGrade" : term === "Summer" ? "summerGrade" : "midtermGrade";
+  const termLabel    = term === "Final" ? "Final Grade" : term === "Summer" ? "Summer Term Grade" : "Midterm Grade";
 
-    return () => {
-      clearTimeout(timeout);
-      window.removeEventListener("mousemove", resetTimer);
-      window.removeEventListener("keydown", resetTimer);
-      window.removeEventListener("click", resetTimer);
-      window.removeEventListener("scroll", resetTimer);
-    };
-  }, [studentData, navigate]);
+  const lectureCols    = classData?.lectureCols    ?? DEFAULT_LEC_COLS;
+  const laboratoryCols = classData?.laboratoryCols ?? DEFAULT_LAB_COLS;
 
-  if (!studentData) {
-    return <Navigate to="/" replace />;
-  }
+  const activeLecCols = classType === "Laboratory" ? [] : lectureCols;
+  const activeLabCols = classType === "Lecture"    ? [] : laboratoryCols;
 
-  const fullName = `${studentData.lastName.toUpperCase()}, ${studentData.firstName.toUpperCase()}`;
+  const gradeNum   = toNum(studentData?.[termGradeKey]);
+  const isPassed   = gradeNum !== null && gradeNum < 3.25;
+  const gradeColor = gradeNum === null
+    ? "text-gray-400 font-bold"
+    : isPassed ? "text-green-600 font-bold" : "text-red-600 font-bold";
 
-  // ✅ Dynamic title from session data
-  const pageTitle =
-    studentData.courseCode && studentData.subjectName
-      ? `${studentData.courseCode} - ${studentData.subjectName} — Midterm Record`
-      : studentData.courseCode
-        ? `${studentData.courseCode} — Midterm Record`
-        : "Midterm Grade Record";
+  // Confetti fires once class data is settled — must be before any early return
+  const [showConfetti, setShowConfetti] = useState(false);
+  useEffect(() => {
+    if (classLoading || !isPassed) return;
+    const tStart = setTimeout(() => {
+      setShowConfetti(true);
+      const tStop = setTimeout(() => setShowConfetti(false), 10_000);
+      return () => clearTimeout(tStop);
+    }, 0);
+    return () => clearTimeout(tStart);
+  }, [classLoading, isPassed]);
 
-  const formatScore = (value: number) => {
-    if (value === -1)
-      return <span className="text-red-500 italic">Missed</span>;
-    return value;
+  if (!studentData) return <Navigate to="/" replace />;
+
+  // ── Display helpers ────────────────────────────────────────────────────────
+  const fmt = (v: number | null) =>
+    v === null
+      ? <span className="text-orange-500 italic">Missing</span>
+      : v;
+
+  const fmtGrade = (v: number | null) => (v === null ? "N/A" : v.toFixed(2));
+
+  // Build table rows for one group (lecture or lab)
+  const renderSection = (
+    cols: CustomColumn[],
+    categoryLabel: string,
+    rowClass: string
+  ): React.ReactElement[] => {
+    if (cols.length === 0) return [];
+    const groups = groupBySubGroup(cols);
+    const rows: React.ReactElement[] = [];
+    let firstInSection = true;
+
+    for (const { subGroup, cols: subCols } of groups) {
+      for (let i = 0; i < subCols.length; i++) {
+        const col   = subCols[i];
+        const score = toNum(studentData[col.key]);
+        rows.push(
+          <tr key={col.key} className={rowClass}>
+            {firstInSection && (
+              <td
+                rowSpan={cols.length}
+                className={`px-4 py-2 border font-semibold align-top ${rowClass}`}
+              >
+                {categoryLabel}
+              </td>
+            )}
+            {i === 0 && (
+              <td
+                rowSpan={subCols.length}
+                className={`px-4 py-2 border font-semibold align-top ${rowClass}`}
+              >
+                {subGroup}
+              </td>
+            )}
+            <td className="px-4 py-2 border">{col.label}</td>
+            <td className="px-4 py-2 border">{fmt(score)}</td>
+          </tr>
+        );
+        firstInSection = false;
+      }
+    }
+    return rows;
   };
 
-  const formatMidtermGrade = (value: number) => {
-    if (value === -1) return "N/A";
-    return value.toFixed(2);
-  };
+  // ── Page info ──────────────────────────────────────────────────────────────
+  const fullName  = `${studentData.lastName.toUpperCase()}, ${studentData.firstName.toUpperCase()}`;
+  const pageTitle = studentData.courseCode && studentData.subjectName
+    ? `${studentData.courseCode} — ${studentData.subjectName}`
+    : studentData.courseCode ?? "Class Record";
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
+    <>
     <div className="min-h-screen flex items-center justify-center bg-white p-4 relative">
       {showConfetti && (
         <Confetti
@@ -167,17 +264,17 @@ export default function ViewRecordPage() {
       )}
 
       <div className="bg-white rounded-3xl shadow-lg w-full max-w-4xl p-6 border border-gray-200 relative z-10">
-        {/* ✅ Dynamic title */}
+
+        {/* Header */}
         <h1 className="text-2xl md:text-3xl font-bold text-blue-700 text-center mb-1">
           {pageTitle}
         </h1>
-
+        <p className="text-center text-blue-600 font-medium text-sm mb-1">{termLabel} Record</p>
         {studentData.yearSection && (
-          <p className="text-center text-gray-500 text-sm mb-4">
-            {studentData.yearSection}
-          </p>
+          <p className="text-center text-gray-500 text-sm mb-4">{studentData.yearSection}</p>
         )}
 
+        {/* Student info */}
         <div className="mb-6 text-black text-center">
           <p className="font-semibold">
             Name: <span className="font-bold">{fullName}</span>
@@ -185,146 +282,80 @@ export default function ViewRecordPage() {
           <p>ID Number: {studentData.idNumber}</p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-left text-sm sm:text-base text-black">
-            <thead>
-              <tr className="bg-blue-100 text-blue-900">
-                <th className="px-4 py-2 border">Category</th>
-                <th className="px-4 py-2 border">Weight</th>
-                <th className="px-4 py-2 border">Component</th>
-                <th className="px-4 py-2 border">Score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {/* LECTURE 67% */}
-              <tr>
-                <td className="px-4 py-2 border font-semibold" rowSpan={6}>
-                  Lecture (67%)
-                </td>
-                <td className="px-4 py-2 border font-semibold">20%</td>
-                <td className="px-4 py-2 border">Attendance</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.attendance)}
-                </td>
-              </tr>
+        {/* Table */}
+        {classLoading ? (
+          <div className="flex justify-center py-12">
+            <i className="pi pi-spin pi-spinner text-blue-500 text-3xl"></i>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left text-sm sm:text-base text-black">
+              <thead>
+                <tr className="bg-blue-100 text-blue-900">
+                  <th className="px-4 py-2 border">Category</th>
+                  <th className="px-4 py-2 border">Sub-group</th>
+                  <th className="px-4 py-2 border">Component</th>
+                  <th className="px-4 py-2 border">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renderSection(
+                  activeLecCols,
+                  `Lecture (${classType === "Both" ? lecPct : 100}%)`,
+                  ""
+                )}
+                {renderSection(
+                  activeLabCols,
+                  `Laboratory (${classType === "Both" ? labPct : 100}%)`,
+                  "bg-gray-50"
+                )}
 
-              <tr>
-                <td className="px-4 py-2 border font-semibold" rowSpan={4}>
-                  40%
-                </td>
-                <td className="px-4 py-2 border">Quiz 1</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz1)}
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-2 border">Quiz 2</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz2)}
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-2 border">Quiz 3</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.quiz3)}
-                </td>
-              </tr>
-              <tr>
-                <td className="px-4 py-2 border">Prelim</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.prelim)}
-                </td>
-              </tr>
+                {/* Grade row */}
+                <tr className="bg-blue-100 font-bold">
+                  <td colSpan={3} className="px-4 py-2 border text-right">
+                    {termLabel}
+                  </td>
+                  <td className={`px-4 py-2 border ${gradeColor}`}>
+                    {fmtGrade(gradeNum)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
 
-              <tr>
-                <td className="px-4 py-2 border font-semibold">40%</td>
-                <td className="px-4 py-2 border">Midterm Written Exam</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.midtermwrittenexam)}
-                </td>
-              </tr>
+        {/* Pass / fail */}
+        {!classLoading && gradeNum !== null && (
+          <div className="mt-4 text-center text-sm font-semibold">
+            {isPassed
+              ? <span className="text-green-600">🎉 Congratulations! You passed!</span>
+              : <span className="text-red-500">You did not pass this term. Keep going!</span>
+            }
+          </div>
+        )}
 
-              {/* LABORATORY 33% */}
-              <tr className="bg-gray-50">
-                <td className="px-4 py-2 border font-semibold" rowSpan={5}>
-                  Laboratory (33%)
-                </td>
-                <td className="px-4 py-2 border font-semibold" rowSpan={3}>
-                  30%
-                </td>
-                <td className="px-4 py-2 border">Laboratory Activity 1</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.laboratoryactivity1)}
-                </td>
-              </tr>
-              <tr className="bg-gray-50">
-                <td className="px-4 py-2 border">Laboratory Activity 2</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.laboratoryactivity2)}
-                </td>
-              </tr>
-              <tr className="bg-gray-50">
-                <td className="px-4 py-2 border">Laboratory Activity 3</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.laboratoryactivity3)}
-                </td>
-              </tr>
-
-              <tr className="bg-gray-50">
-                <td className="px-4 py-2 border font-semibold">30%</td>
-                <td className="px-4 py-2 border">PIT</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.PIT)}
-                </td>
-              </tr>
-
-              <tr className="bg-gray-50">
-                <td className="px-4 py-2 border font-semibold">40%</td>
-                <td className="px-4 py-2 border">Midterm Lab Exam</td>
-                <td className="px-4 py-2 border">
-                  {formatScore(studentData.midtermlabexam)}
-                </td>
-              </tr>
-
-              {/* MIDTERM GRADE */}
-              <tr className="bg-blue-100 font-bold">
-                <td className="px-4 py-2 border text-right" colSpan={3}>
-                  Midterm Grade
-                </td>
-                <td className={`px-4 py-2 border ${gradeColor}`}>
-                  {formatMidtermGrade(studentData.midtermGrade)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pass/Fail message */}
-        <div className="mt-4 text-center text-sm font-semibold">
-          {gradeNum !== -1 &&
-            (isPassed ? (
-              <span className="text-green-600">
-                🎉 Congratulations! You passed!
-              </span>
-            ) : (
-              <span className="text-red-500">
-                You did not pass this term. Keep going!
-              </span>
-            ))}
-        </div>
-
-        <div className="mt-6 flex justify-center">
+        <div className="mt-6 flex justify-center gap-3">
           <button
             onClick={() => {
               sessionStorage.removeItem("studentRecord");
-              navigate("/", { replace: true });
+              navigate("/subject-select", { replace: true });
             }}
             className="w-full sm:w-1/2 md:w-1/3 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 shadow-md transition"
           >
-            Back to Login
+            ← Back to Subjects
           </button>
         </div>
       </div>
     </div>
+
+    {showTimeout && (
+      <SessionTimeoutModal
+        countdown={countdown}
+        totalSec={20}
+        onExtend={extendSession}
+        onLogout={logoutNow}
+      />
+    )}
+    </>
   );
 }

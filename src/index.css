@@ -2,6 +2,225 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ========================================= */
+/* LOGIN CARD ANIMATION                      */
+/* ========================================= */
+
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(18px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+.animate-card-enter {
+  animation: card-enter 0.45s cubic-bezier(0.34, 1.1, 0.64, 1) both;
+}
+
+/* ========================================= */
+/* SESSION TIMEOUT MODAL                     */
+/* ========================================= */
+
+@keyframes session-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes session-slide-up {
+  from { opacity: 0; transform: translateY(24px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+.session-timeout-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  animation: session-fade-in 0.25s ease;
+}
+
+.session-timeout-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.60);
+  backdrop-filter: blur(4px);
+}
+
+.session-timeout-card {
+  position: relative;
+  background: #ffffff;
+  border-radius: 1.25rem;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35);
+  width: 100%;
+  max-width: 400px;
+  overflow: hidden;
+  animation: session-slide-up 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.session-timeout-stripe {
+  height: 5px;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  transition: background 0.5s ease;
+}
+.session-timeout-stripe.urgent {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.session-timeout-body {
+  padding: 2rem 2rem 1.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+}
+
+.session-timeout-icon-wrap {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fef3c7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d97706;
+  transition: background 0.5s ease, color 0.5s ease;
+}
+.session-timeout-icon-wrap.urgent {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.session-timeout-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+.session-timeout-message {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.session-timeout-ring-wrap {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin: 0.25rem 0;
+}
+
+.session-timeout-ring-svg {
+  display: block;
+}
+
+.session-timeout-ring-track {
+  color: #e5e7eb;
+}
+
+.session-timeout-ring-arc {
+  color: #f59e0b;
+  transition: color 0.5s ease;
+}
+.session-timeout-ring-arc.urgent {
+  color: #ef4444;
+}
+
+.session-timeout-count {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 900;
+  color: #f59e0b;
+  transition: color 0.5s ease;
+  line-height: 1;
+}
+.session-timeout-count.urgent {
+  color: #dc2626;
+}
+
+.session-timeout-sub {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.session-timeout-actions {
+  display: flex;
+  gap: 0.75rem;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.session-timeout-btn-logout {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  border: 2px solid #ef4444;
+  color: #ef4444;
+  background: transparent;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.session-timeout-btn-logout:hover {
+  background: #fef2f2;
+}
+
+.session-timeout-btn-extend {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  border: none;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+.session-timeout-btn-extend:hover {
+  background: #1d4ed8;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .session-timeout-card        { background: #1f2937; }
+  .session-timeout-title       { color: #f9fafb; }
+  .session-timeout-message     { color: #9ca3af; }
+  .session-timeout-ring-track  { color: #374151; }
+  .session-timeout-icon-wrap   { background: #451a03; color: #fbbf24; }
+  .session-timeout-icon-wrap.urgent { background: #450a0a; color: #f87171; }
+  .session-timeout-btn-logout  { border-color: #f87171; color: #f87171; }
+  .session-timeout-btn-logout:hover { background: #450a0a; }
+}
+
+/* Dark mode via .dark class (Tailwind dark mode) */
+.dark .session-timeout-card        { background: #1f2937; }
+.dark .session-timeout-title       { color: #f9fafb; }
+.dark .session-timeout-message     { color: #9ca3af; }
+.dark .session-timeout-ring-track  { color: #374151; }
+.dark .session-timeout-icon-wrap   { background: #451a03; color: #fbbf24; }
+.dark .session-timeout-icon-wrap.urgent { background: #450a0a; color: #f87171; }
+.dark .session-timeout-btn-logout  { border-color: #f87171; color: #f87171; }
+.dark .session-timeout-btn-logout:hover { background: #450a0a; }
+
 
 /* ============================= */
 /* Row Editor Styling */
@@ -83,4 +302,139 @@
   justify-content: flex-end; /* keep them on right */
   align-items: center;
   gap: 32px !important; /* 🔥 change this number */
+}
+
+/* Remove number input spinners */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+
+/* ========================================= */
+/* DARK MODE — PrimeReact overrides          */
+/* ========================================= */
+
+/* ── ConfirmDialog ── */
+.dark .p-dialog {
+  background: #1f2937 !important;
+  border-color: #374151 !important;
+  color: #f9fafb !important;
+}
+.dark .p-dialog .p-dialog-header {
+  background: #1f2937 !important;
+  color: #f9fafb !important;
+  border-bottom: 1px solid #374151 !important;
+}
+.dark .p-dialog .p-dialog-content {
+  background: #1f2937 !important;
+  color: #d1d5db !important;
+}
+.dark .p-dialog .p-dialog-footer {
+  background: #1f2937 !important;
+  border-top: 1px solid #374151 !important;
+}
+.dark .p-dialog .p-dialog-header-icon {
+  color: #9ca3af !important;
+}
+.dark .p-dialog .p-dialog-header-icon:hover {
+  background: #374151 !important;
+  color: #f9fafb !important;
+}
+
+/* ── Toast ── */
+.dark .p-toast .p-toast-message {
+  border-radius: 8px !important;
+}
+.dark .p-toast .p-toast-message.p-toast-message-success {
+  background: #14532d !important;
+  border-left: 4px solid #22c55e !important;
+  color: #d1fae5 !important;
+}
+.dark .p-toast .p-toast-message.p-toast-message-error {
+  background: #450a0a !important;
+  border-left: 4px solid #ef4444 !important;
+  color: #fee2e2 !important;
+}
+.dark .p-toast .p-toast-message.p-toast-message-warn {
+  background: #451a03 !important;
+  border-left: 4px solid #f59e0b !important;
+  color: #fef3c7 !important;
+}
+.dark .p-toast .p-toast-message.p-toast-message-info {
+  background: #0c4a6e !important;
+  border-left: 4px solid #0ea5e9 !important;
+  color: #e0f2fe !important;
+}
+.dark .p-toast .p-toast-message-content {
+  color: inherit !important;
+}
+.dark .p-toast .p-toast-summary {
+  color: inherit !important;
+}
+.dark .p-toast .p-toast-detail {
+  color: inherit !important;
+  opacity: 0.9;
+}
+.dark .p-toast .p-toast-icon-close {
+  color: #9ca3af !important;
+}
+.dark .p-toast .p-toast-icon-close:hover {
+  background: rgba(255,255,255,0.1) !important;
+}
+
+/* ── Calendar ── */
+.dark .p-datepicker {
+  background: #1f2937 !important;
+  border-color: #374151 !important;
+  color: #f9fafb !important;
+}
+.dark .p-datepicker .p-datepicker-header {
+  background: #1f2937 !important;
+  color: #f9fafb !important;
+  border-bottom: 1px solid #374151 !important;
+}
+.dark .p-datepicker .p-datepicker-title {
+  color: #f9fafb !important;
+}
+.dark .p-datepicker .p-datepicker-prev,
+.dark .p-datepicker .p-datepicker-next {
+  color: #9ca3af !important;
+}
+.dark .p-datepicker .p-datepicker-prev:hover,
+.dark .p-datepicker .p-datepicker-next:hover {
+  background: #374151 !important;
+  color: #f9fafb !important;
+}
+.dark .p-datepicker table th {
+  color: #9ca3af !important;
+}
+.dark .p-datepicker table td > span {
+  color: #e5e7eb !important;
+}
+.dark .p-datepicker table td > span:not(.p-highlight):not(.p-disabled):hover {
+  background: #374151 !important;
+  color: #f9fafb !important;
+}
+.dark .p-datepicker table td.p-datepicker-today > span:not(.p-highlight) {
+  background: #1d4ed8 !important;
+  color: #fff !important;
+}
+.dark .p-datepicker table td > span.p-highlight {
+  background: #2563eb !important;
+  color: #fff !important;
+}
+.dark .p-datepicker .p-monthpicker .p-monthpicker-month,
+.dark .p-datepicker .p-yearpicker .p-yearpicker-year {
+  color: #e5e7eb !important;
+}
+.dark .p-datepicker .p-monthpicker .p-monthpicker-month:hover,
+.dark .p-datepicker .p-yearpicker .p-yearpicker-year:hover {
+  background: #374151 !important;
+}
+.dark .p-datepicker .p-weekheader {
+  color: #6b7280 !important;
 }

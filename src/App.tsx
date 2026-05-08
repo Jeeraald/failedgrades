@@ -1,26 +1,36 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import HomePage from "./pages/HomePage";
 import ViewRecord from "./pages/ViewRecord";
-import AdminLogin from "./pages/AdminLogin";
-import AdminDashboard from "./pages/AdminDashboard";
-import AdminClassRecord from "./pages/AdminClassRecord";
-import AdminUploadGrades from "./pages/AdminUploadGrades";
+import StudentSubjectList from "./pages/StudentSubjectList";
+import GradeReveal from "./pages/GradeReveal";
+import AllClassRecords from "./pages/AllClassRecords";
+import InstructorLogin from "./pages/InstructorLogin";
+import InstructorDashboard from "./pages/InstructorDashboard";
+import InstructorClassRecord from "./pages/InstructorClassRecord";
+import InstructorUploadGrades from "./pages/InstructorUploadGrades";
+import InstructorSettings from "./pages/InstructorSettings";
 import ProtectedRoute from "./components/ProtectedRoute";
-import AdminLayout from "./layouts/AdminLayout";
+import InstructorLayout from "./layouts/InstructorLayout";
+import ForgotPassword from "./pages/ForgotPassword";
 
 function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/viewrecord" element={<ViewRecord />} />
-      <Route path="/admin-login" element={<AdminLogin />} />
+      <Route path="/subject-select" element={<StudentSubjectList />} />
+      <Route path="/grade-reveal" element={<GradeReveal />} />
+      <Route path="/all-class-records" element={<AllClassRecords />} />
+      <Route path="/instructor-login" element={<InstructorLogin />} />
 
-      {/* 🔐 Protected Admin Layout */}
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+
+      {/* Protected Instructor Layout */}
       <Route
-        path="/admin/*"
+        path="/instructor/*"
         element={
           <ProtectedRoute>
-            <AdminLayout />
+            <InstructorLayout />
           </ProtectedRoute>
         }
       >
@@ -28,16 +38,16 @@ function App() {
         <Route index element={<Navigate to="dashboard" replace />} />
 
         {/* Dashboard */}
-        <Route path="dashboard" element={<AdminDashboard />} />
+        <Route path="dashboard" element={<InstructorDashboard />} />
 
         {/* Class List / Create */}
-        <Route path="classrecord" element={<AdminClassRecord />} />
+        <Route path="classrecord" element={<InstructorClassRecord />} />
 
         {/* Upload Grades per Class */}
-        <Route
-          path="classrecord/:classId"
-          element={<AdminUploadGrades />}
-        />
+        <Route path="classrecord/:classId" element={<InstructorUploadGrades />} />
+
+        {/* Settings */}
+        <Route path="settings" element={<InstructorSettings />} />
       </Route>
     </Routes>
   );
