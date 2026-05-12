@@ -10,13 +10,9 @@ export default defineConfig({
       },
     }),
   ],
-  build: {
-    // Drop console.debug and console.log in production bundles so debug
-    // output (which can expose internal data) is never shipped to end users.
-    // console.warn and console.error are kept for operational visibility.
-    esbuild: {
-      drop: [],
-      pure: ['console.debug', 'console.log'],
-    },
+  // Mark console.debug/log as pure (side-effect-free) so esbuild can tree-shake
+  // them out of production bundles. console.warn/error are kept for visibility.
+  esbuild: {
+    pure: ['console.debug', 'console.log'],
   },
 })
