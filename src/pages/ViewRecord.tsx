@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
+import bgImage from "../assets/background.jpg";
 import Confetti from "react-confetti";
 import { useSessionTimeout } from "../utils/useSessionTimeout";
 import SessionTimeoutModal from "../components/SessionTimeoutModal";
+import { toNum } from "../utils/studentSession";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +21,7 @@ interface ClassData {
   classType: "Lecture" | "Laboratory" | "Both";
   lecturePercent: number;
   labPercent: number;
-  term: "Midterm" | "Final" | "Summer";
+  term: "Midterm" | "Final" | "Midyear";
   lectureCols?: CustomColumn[];
   laboratoryCols?: CustomColumn[];
 }
@@ -95,12 +97,6 @@ function groupBySubGroup(cols: CustomColumn[]): { subGroup: string; cols: Custom
   return Array.from(map.entries()).map(([subGroup, cols]) => ({ subGroup, cols }));
 }
 
-function toNum(val: unknown): number | null {
-  if (val === undefined || val === null || val === "") return null;
-  const n = Number(val);
-  return Number.isNaN(n) ? null : n;
-}
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function ViewRecordPage() {
@@ -122,13 +118,30 @@ export default function ViewRecordPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Fetch class document — also verifies grades are still posted
+  // Real-time class doc listener — redirects immediately if class is disabled or
+  // unposted, and keeps classType/columns in sync if instructor edits mid-session.
   useEffect(() => {
     if (!studentData?.classId) return;
-    getDoc(doc(db, "classes", studentData.classId as string))
-      .then((snap) => {
-        if (!snap.exists() || !snap.data().gradesPosted) {
-          // Grades were unposted after the student last loaded the page — block access
+
+    // One-time check: per-student posted flag (changes rarely)
+    getDoc(doc(db, "classes", studentData.classId as string, "students", studentData.idNumber))
+      .then((studentSnap) => {
+        const studentDoc = studentSnap.exists() ? studentSnap.data() : null;
+        const studentPosted = studentDoc?.posted === undefined ? true : studentDoc.posted === true;
+        if (!studentPosted) {
+          sessionStorage.removeItem("studentRecord");
+          navigate("/subject-select", { replace: true });
+        }
+      })
+      .catch(() => {});
+
+    // Live listener on class doc — skip cache fires to prevent stale class type flash
+    const unsub = onSnapshot(
+      doc(db, "classes", studentData.classId as string),
+      { includeMetadataChanges: true },
+      (snap) => {
+        if (snap.metadata.fromCache) return; // wait for server-confirmed data only
+        if (!snap.exists() || snap.data().enabled === false || !snap.data().gradesPosted) {
           sessionStorage.removeItem("studentRecord");
           navigate("/subject-select", { replace: true });
           return;
@@ -143,9 +156,12 @@ export default function ViewRecordPage() {
           laboratoryCols: Array.isArray(d.laboratoryCols) ? d.laboratoryCols : undefined,
         });
         setClassLoading(false);
-      })
-      .catch(() => setClassLoading(false));
-  }, [studentData?.classId, navigate]);
+      },
+      () => setClassLoading(false)
+    );
+
+    return () => unsub();
+  }, [studentData?.classId, studentData?.idNumber, navigate]);
 
   const { showModal: showTimeout, countdown, extendSession, logoutNow } = useSessionTimeout({
     warningDelayMs: 5 * 60 * 1000,
@@ -163,8 +179,8 @@ export default function ViewRecordPage() {
   const lecPct       = classData?.lecturePercent ?? 63;
   const labPct       = classData?.labPercent     ?? 37;
   const term         = classData?.term           ?? "Midterm";
-  const termGradeKey = term === "Final" ? "finalGrade" : term === "Summer" ? "summerGrade" : "midtermGrade";
-  const termLabel    = term === "Final" ? "Final Grade" : term === "Summer" ? "Summer Term Grade" : "Midterm Grade";
+  const termGradeKey = term === "Final" ? "finalGrade" : term === "Midyear" ? "summerGrade" : "midtermGrade";
+  const termLabel    = term === "Final" ? "Final Grade" : term === "Midyear" ? "Midyear Grade" : "Midterm Grade";
 
   const lectureCols    = classData?.lectureCols    ?? DEFAULT_LEC_COLS;
   const laboratoryCols = classData?.laboratoryCols ?? DEFAULT_LAB_COLS;
@@ -182,12 +198,15 @@ export default function ViewRecordPage() {
   const [showConfetti, setShowConfetti] = useState(false);
   useEffect(() => {
     if (classLoading || !isPassed) return;
+    let tStop: ReturnType<typeof setTimeout> | undefined;
     const tStart = setTimeout(() => {
       setShowConfetti(true);
-      const tStop = setTimeout(() => setShowConfetti(false), 10_000);
-      return () => clearTimeout(tStop);
+      tStop = setTimeout(() => setShowConfetti(false), 10_000);
     }, 0);
-    return () => clearTimeout(tStart);
+    return () => {
+      clearTimeout(tStart);
+      clearTimeout(tStop);
+    };
   }, [classLoading, isPassed]);
 
   if (!studentData) return <Navigate to="/" replace />;
@@ -252,7 +271,11 @@ export default function ViewRecordPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
-    <div className="min-h-screen flex items-center justify-center bg-white p-4 relative">
+    <div
+      className="min-h-screen flex items-center justify-center p-4 relative"
+      style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
+    >
+      <div className="absolute inset-0 bg-black/50" />
       {showConfetti && (
         <Confetti
           width={windowSize.width}
@@ -260,13 +283,14 @@ export default function ViewRecordPage() {
           numberOfPieces={200}
           gravity={0.25}
           recycle={false}
+          style={{ zIndex: 50 }}
         />
       )}
 
-      <div className="bg-white rounded-3xl shadow-lg w-full max-w-4xl p-6 border border-gray-200 relative z-10">
+      <div className="bg-white rounded-3xl shadow-lg w-full max-w-4xl p-4 sm:p-6 border border-gray-200 relative z-10">
 
         {/* Header */}
-        <h1 className="text-2xl md:text-3xl font-bold text-blue-700 text-center mb-1">
+        <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-700 text-center mb-1">
           {pageTitle}
         </h1>
         <p className="text-center text-blue-600 font-medium text-sm mb-1">{termLabel} Record</p>
@@ -289,13 +313,13 @@ export default function ViewRecordPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm sm:text-base text-black">
+            <table className="w-full border-collapse text-left text-xs sm:text-sm text-black">
               <thead>
                 <tr className="bg-blue-100 text-blue-900">
-                  <th className="px-4 py-2 border">Category</th>
-                  <th className="px-4 py-2 border">Sub-group</th>
-                  <th className="px-4 py-2 border">Component</th>
-                  <th className="px-4 py-2 border">Score</th>
+                  <th className="px-2 sm:px-4 py-2 border text-xs sm:text-sm">Category</th>
+                  <th className="px-2 sm:px-4 py-2 border text-xs sm:text-sm">Sub-group</th>
+                  <th className="px-2 sm:px-4 py-2 border text-xs sm:text-sm">Component</th>
+                  <th className="px-2 sm:px-4 py-2 border text-xs sm:text-sm">Score</th>
                 </tr>
               </thead>
               <tbody>
@@ -340,7 +364,7 @@ export default function ViewRecordPage() {
               sessionStorage.removeItem("studentRecord");
               navigate("/subject-select", { replace: true });
             }}
-            className="w-full sm:w-1/2 md:w-1/3 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 shadow-md transition"
+            className="w-full sm:w-auto bg-blue-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-blue-700 shadow-md transition"
           >
             ← Back to Subjects
           </button>

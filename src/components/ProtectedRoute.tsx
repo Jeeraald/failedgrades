@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
-import { auth } from "../firebase/firebaseConfig";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../firebase/firebaseConfig";
 import { useSessionTimeout } from "../utils/useSessionTimeout";
 import SessionTimeoutModal from "./SessionTimeoutModal";
 
@@ -11,13 +12,26 @@ interface Props {
 }
 
 export default function ProtectedRoute({ children }: Props) {
-  const [user, setUser]       = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const navigate              = useNavigate();
+  const [user,       setUser]       = useState<User | null>(null);
+  const [loading,    setLoading]    = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
+
+      if (firebaseUser) {
+        try {
+          const snap = await getDoc(doc(db, "instructors", firebaseUser.uid));
+          // setupComplete === false means explicitly flagged as incomplete (new user)
+          // undefined/true means existing user or already completed
+          setNeedsSetup(snap.exists() && snap.data().setupComplete === false);
+        } catch {
+          setNeedsSetup(false); // on Firestore error, don't block access
+        }
+      }
+
       setLoading(false);
     });
     return () => unsubscribe();
@@ -29,15 +43,15 @@ export default function ProtectedRoute({ children }: Props) {
   };
 
   const { showModal, countdown, extendSession, logoutNow } = useSessionTimeout({
-    warningDelayMs: 5 * 60 * 1000, // show warning after 5 min of inactivity
+    warningDelayMs: 5 * 60 * 1000,
     countdownSec:   20,
     onLogout:       handleLogout,
-    enabled:        !!user,
+    enabled:        !!user && !needsSetup,
   });
 
   if (loading) return null;
-
-  if (!user) return <Navigate to="/instructor-login" replace />;
+  if (!user)      return <Navigate to="/instructor-login" replace />;
+  if (needsSetup) return <Navigate to="/instructor/setup"  replace />;
 
   return (
     <>

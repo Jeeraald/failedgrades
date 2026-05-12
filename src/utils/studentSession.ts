@@ -42,20 +42,20 @@ export function loadViewedClasses(): Set<string> {
 }
 
 export const termLabel = (term: string) =>
-  term === "Final" ? "Final" : term === "Summer" ? "Summer Term" : "Midterm";
+  term === "Final" ? "Final" : term === "Midyear" ? "Midyear" : "Midterm";
 
 export const termGradeKey = (term: string) =>
-  term === "Final" ? "finalGrade" : term === "Summer" ? "summerGrade" : "midtermGrade";
+  term === "Final" ? "finalGrade" : term === "Midyear" ? "summerGrade" : "midtermGrade";
 
 export const termBadgeClass = (term: string) =>
   term === "Final"
     ? "bg-orange-100 text-orange-600"
-    : term === "Summer"
+    : term === "Midyear"
     ? "bg-teal-100 text-teal-600"
     : "bg-indigo-100 text-indigo-600";
 
 export const termAccentClass = (term: string) =>
-  term === "Final" ? "bg-orange-400" : term === "Summer" ? "bg-teal-400" : "bg-blue-500";
+  term === "Final" ? "bg-orange-400" : term === "Midyear" ? "bg-teal-400" : "bg-blue-500";
 
 /** "May 8, 2026 — 7:35 PM" */
 export function formatPostedAt(iso: string | null): string | null {

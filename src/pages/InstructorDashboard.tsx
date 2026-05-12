@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
 import { db, auth } from "../firebase/firebaseConfig";
-import { Calendar } from "primereact/calendar";
+import MiniCalendar from "../components/MiniCalendar";
 
 export default function InstructorDashboard() {
   const [studentCount, setStudentCount] = useState(0);
@@ -16,6 +16,7 @@ export default function InstructorDashboard() {
 
   useEffect(() => {
     if (!uid) return;
+    let mounted = true;
 
     const classesQuery = query(
       collection(db, "classes"),
@@ -47,10 +48,9 @@ export default function InstructorDashboard() {
       await Promise.all(
         snapshot.docs.map(async (classDoc) => {
           const classData = classDoc.data();
-          // Resolve the correct grade field for this class's term
           const gradeKey =
             classData.term === "Final" ? "finalGrade" :
-            classData.term === "Summer" ? "summerGrade" : "midtermGrade";
+            classData.term === "Midyear" ? "summerGrade" : "midtermGrade";
 
           const studentsSnap = await getDocs(
             collection(db, "classes", classDoc.id, "students")
@@ -68,12 +68,17 @@ export default function InstructorDashboard() {
         })
       );
 
+      // Guard: component may have unmounted while the async work was in flight
+      if (!mounted) return;
       setStudentCount(total);
       setPassedCount(passed);
       setFailedCount(failed);
     });
 
-    return () => unsubscribeClasses();
+    return () => {
+      mounted = false;
+      unsubscribeClasses();
+    };
   }, [uid]);
 
   return (
@@ -86,10 +91,10 @@ export default function InstructorDashboard() {
         </p>
       </div>
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+      {/* Main layout */}
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
         {/* CARDS */}
-        <div className="xl:col-span-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="flex-1 grid grid-cols-2 md:grid-cols-3 gap-4">
           {/* Total Students */}
           <motion.div
             whileHover={{ scale: 1.03 }}
@@ -137,12 +142,10 @@ export default function InstructorDashboard() {
         </div>
 
         {/* CALENDAR */}
-        <div className="xl:col-span-2 bg-white dark:bg-gray-800 shadow-md rounded-xl p-4 flex justify-center items-start">
-          <Calendar
-            value={date}
-            onChange={(e) => setDate(e.value as Date)}
-            inline
-            showWeek
+        <div className="flex-none bg-white dark:bg-gray-800 shadow-md rounded-xl p-4 w-full lg:w-fit">
+          <MiniCalendar
+            value={date ?? new Date()}
+            onChange={(d) => setDate(d)}
           />
         </div>
       </div>

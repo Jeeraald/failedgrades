@@ -15,6 +15,7 @@ import { auth, db, storage } from "../firebase/firebaseConfig";
 import { Toast } from "primereact/toast";
 import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
 import { logActivity } from "../utils/activityLog";
+import { toTitleCase } from "../utils/formatters";
 
 declare global {
   interface Window {
@@ -163,6 +164,11 @@ export default function InstructorSettings() {
     } else {
       if (window.grecaptcha) setCaptchaReady(true);
     }
+
+    return () => {
+      // Prevent the callback from firing into a stale/unmounted component
+      window.onRecaptchaLoad = () => {};
+    };
   }, []);
 
   // Render reCAPTCHA when password tab is active
@@ -224,9 +230,11 @@ export default function InstructorSettings() {
     return () => unsub();
   }, [activeTab, uid]);
 
-  // Reset captcha when leaving password tab
+  // Reset captcha when leaving password tab and clear the rendered widget DOM
+  // to prevent multiple widget instances from accumulating on rapid tab switches.
   useEffect(() => {
     if (activeTab !== "password") {
+      if (captchaRef.current) captchaRef.current.innerHTML = "";
       widgetIdRef.current = null;
       setCaptchaVerified(false);
       setPasswordTouched(false);
@@ -622,7 +630,7 @@ export default function InstructorSettings() {
                 onClick={() => setActiveTab(tab.key)}
                 className={`
                   flex-1 flex items-center justify-center gap-2
-                  px-4 py-4 text-sm font-medium
+                  px-2 sm:px-4 py-3 sm:py-4 text-sm font-medium
                   border-b-2 transition-all duration-200
                   ${isActive
                     ? "border-blue-600 text-blue-600 bg-white dark:bg-gray-900 dark:text-blue-400"
@@ -638,7 +646,7 @@ export default function InstructorSettings() {
         </div>
 
         {/* Tab Content */}
-        <div className="flex-1 p-6 overflow-y-auto">
+        <div className="flex-1 p-4 sm:p-6 overflow-y-auto">
 
           {/* ── PROFILE TAB ── */}
           {activeTab === "profile" && (
@@ -647,7 +655,7 @@ export default function InstructorSettings() {
               {/* Profile Picture */}
               <div className="flex flex-col items-center gap-3">
                 <div className="relative">
-                  <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-blue-100 shadow-md bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-4 border-blue-100 shadow-md bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
                     {currentPhoto ? (
                       <img src={currentPhoto} alt="Profile" className="w-full h-full object-cover" />
                     ) : (
@@ -699,7 +707,7 @@ export default function InstructorSettings() {
                     className={touchedFirst && !firstName ? errorInputClass : inputClass}
                     placeholder="Juan"
                     value={firstName}
-                    onChange={(e) => { setFirstName(e.target.value); setTouchedFirst(true); }}
+                    onChange={(e) => { setFirstName(toTitleCase(e.target.value)); setTouchedFirst(true); }}
                     onBlur={() => setTouchedFirst(true)}
                   />
                   {touchedFirst && !firstName && (
@@ -715,7 +723,7 @@ export default function InstructorSettings() {
                     className={inputClass}
                     placeholder="Santos"
                     value={middleName}
-                    onChange={(e) => setMiddleName(e.target.value)}
+                    onChange={(e) => setMiddleName(toTitleCase(e.target.value))}
                   />
                 </div>
               </div>
@@ -730,7 +738,7 @@ export default function InstructorSettings() {
                   className={touchedLast && !lastName ? errorInputClass : inputClass}
                   placeholder="dela Cruz"
                   value={lastName}
-                  onChange={(e) => { setLastName(e.target.value); setTouchedLast(true); }}
+                  onChange={(e) => { setLastName(toTitleCase(e.target.value)); setTouchedLast(true); }}
                   onBlur={() => setTouchedLast(true)}
                 />
                 {touchedLast && !lastName && (
@@ -748,7 +756,7 @@ export default function InstructorSettings() {
                   className={inputClass}
                   placeholder="Juanito"
                   value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
+                  onChange={(e) => setNickname(toTitleCase(e.target.value))}
                 />
               </div>
 
@@ -991,7 +999,7 @@ export default function InstructorSettings() {
 
               {/* Toolbar */}
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative flex-1 min-w-[180px]">
+                <div className="relative flex-1 min-w-full sm:min-w-[180px]">
                   <i className="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none"></i>
                   <input
                     type="text"
@@ -1035,7 +1043,7 @@ export default function InstructorSettings() {
               ) : (
                 <>
                   <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-                    <table className="w-full text-sm min-w-[720px]">
+                    <table className="w-full text-xs min-w-[600px]">
                       <thead>
                         <tr className="bg-gray-50 dark:bg-gray-700/60 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                           {/* Checkbox select-all */}
@@ -1117,7 +1125,7 @@ export default function InstructorSettings() {
                             <td className="px-3 py-2.5 text-gray-800 dark:text-white font-semibold whitespace-nowrap text-xs">
                               {log.action || "—"}
                             </td>
-                            <td className="px-3 py-2.5 text-gray-500 dark:text-gray-400 text-xs max-w-[200px] truncate">
+                            <td className="px-3 py-2.5 text-gray-500 dark:text-gray-400 text-xs max-w-[100px] sm:max-w-[200px] truncate">
                               {log.affectedItem || "—"}
                             </td>
                             <td className="px-3 py-2.5">

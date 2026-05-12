@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
+import bgImage from "../assets/background.jpg";
 import {
   type EnrolledClass,
   loadEnrolled,
@@ -69,35 +70,78 @@ function groupBySubGroup(cols: CustomColumn[]) {
 
 interface RecordCardProps {
   cls: EnrolledClass;
+  idNumber: string;
   onViewFull: () => void;
 }
 
-function RecordCard({ cls, onViewFull }: RecordCardProps) {
+function RecordCard({ cls, idNumber, onViewFull }: RecordCardProps) {
   const [meta, setMeta] = useState<ClassMeta | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!cls.classId);
   const [unposted, setUnposted] = useState(false);
+  const [disabled, setDisabled] = useState(false);
+  // Coordination refs: both the class doc and student doc must respond before
+  // we finalize loading, so we never briefly show table content for a student
+  // whose individual posted flag hasn't been confirmed yet.
+  const studentPostedRef  = useRef<boolean | null>(null); // null = not yet fetched
+  const pendingMetaRef    = useRef<ClassMeta | null>(null);
+  const studentFetchedRef = useRef(false);
 
   useEffect(() => {
-    if (!cls.classId) { setLoading(false); return; }
-    getDoc(doc(db, "classes", cls.classId))
-      .then((snap) => {
-        if (!snap.exists() || !snap.data().gradesPosted) {
-          setUnposted(true);
-          setLoading(false);
-          return;
+    if (!cls.classId) return;
+
+    // Attempt to finalize the card once both data sources have responded.
+    const tryFinalize = () => {
+      if (!studentFetchedRef.current || !pendingMetaRef.current) return;
+      if (studentPostedRef.current === false) {
+        setUnposted(true); setLoading(false);
+      } else {
+        setMeta(pendingMetaRef.current);
+        setDisabled(false); setUnposted(false); setLoading(false);
+      }
+    };
+
+    // One-time fetch: per-student posted flag
+    getDoc(doc(db, "classes", cls.classId, "students", idNumber))
+      .then((studentSnap) => {
+        const studentDoc = studentSnap.exists() ? studentSnap.data() : null;
+        studentPostedRef.current = studentDoc?.posted === undefined ? true : studentDoc.posted === true;
+        studentFetchedRef.current = true;
+        // If the class doc already responded, finalize now
+        if (!studentPostedRef.current) { setUnposted(true); setLoading(false); }
+        else tryFinalize();
+      })
+      .catch(() => {
+        studentPostedRef.current = true; // default: treat as posted on network error
+        studentFetchedRef.current = true;
+        tryFinalize();
+      });
+
+    // Live listener on class doc — skip cache to prevent stale classType flash
+    const unsub = onSnapshot(
+      doc(db, "classes", cls.classId),
+      { includeMetadataChanges: true },
+      (snap) => {
+        if (snap.metadata.fromCache) return;
+        if (!snap.exists()) { setUnposted(true); setLoading(false); return; }
+        if (snap.data().enabled === false) { setDisabled(true); setLoading(false); return; }
+        if (!snap.data().gradesPosted) {
+          setUnposted(true); setDisabled(false); setLoading(false); return;
         }
         const d = snap.data();
-        setMeta({
+        pendingMetaRef.current = {
           classType:      (d.classType as ClassMeta["classType"]) || "Both",
           lecturePercent: d.lecturePercent ?? 63,
           labPercent:     d.labPercent     ?? 37,
           lectureCols:    Array.isArray(d.lectureCols)    ? d.lectureCols    : undefined,
           laboratoryCols: Array.isArray(d.laboratoryCols) ? d.laboratoryCols : undefined,
-        });
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [cls.classId]);
+        };
+        tryFinalize();
+      },
+      () => setLoading(false)
+    );
+
+    return () => unsub();
+  }, [cls.classId, idNumber]);
 
   const classType    = meta?.classType      ?? "Both";
   const lecPct       = meta?.lecturePercent ?? 63;
@@ -194,6 +238,11 @@ function RecordCard({ cls, onViewFull }: RecordCardProps) {
           <div className="flex items-center justify-center py-8">
             <i className="pi pi-spin pi-spinner text-blue-400 text-xl"></i>
           </div>
+        ) : disabled ? (
+          <div className="flex flex-col items-center justify-center py-8 gap-2 text-center px-4">
+            <i className="pi pi-ban text-gray-300 text-3xl"></i>
+            <p className="text-xs text-gray-400 font-medium">This class record has been disabled by the instructor.</p>
+          </div>
         ) : unposted ? (
           <div className="flex flex-col items-center justify-center py-8 gap-2 text-center px-4">
             <i className="pi pi-eye-slash text-gray-300 text-3xl"></i>
@@ -231,15 +280,15 @@ function RecordCard({ cls, onViewFull }: RecordCardProps) {
       <div className="px-4 py-3 border-t border-gray-100">
         <button
           onClick={onViewFull}
-          disabled={unposted}
+          disabled={unposted || disabled}
           className={`w-full py-2 rounded-xl text-sm font-semibold transition shadow-sm flex items-center justify-center gap-1.5 ${
-            unposted
+            unposted || disabled
               ? "bg-gray-100 text-gray-400 cursor-not-allowed"
               : "bg-blue-600 text-white hover:bg-blue-700"
           }`}
         >
-          <i className={`pi text-xs ${unposted ? "pi-lock" : "pi-external-link"}`}></i>
-          {unposted ? "Grades Unposted" : "View Full Record"}
+          <i className={`pi text-xs ${unposted || disabled ? "pi-lock" : "pi-external-link"}`}></i>
+          {disabled ? "Class Disabled" : unposted ? "Grades Unposted" : "View Full Record"}
         </button>
       </div>
     </div>
@@ -269,30 +318,35 @@ export default function AllClassRecords() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-200 p-4 sm:p-6 md:p-8">
-      <div className="max-w-6xl mx-auto">
+    <div
+      className="min-h-screen p-4 sm:p-6 md:p-8 relative"
+      style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
+    >
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative z-10 max-w-6xl mx-auto">
 
         {/* Header */}
         <div className="mb-6">
           <button
             onClick={() => navigate("/subject-select")}
-            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition font-medium mb-4"
+            className="flex items-center gap-1.5 text-sm text-white/70 hover:text-white transition font-medium mb-4"
           >
             <i className="pi pi-arrow-left text-xs"></i> Back to My Subjects
           </button>
-          <h1 className="text-3xl font-bold text-blue-700 mb-1">Class Records</h1>
-          <p className="text-gray-500 text-sm">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-1">Class Records</h1>
+          <p className="text-blue-100 text-sm">
             {fullName} &middot; {session.idNumber} &middot;{" "}
             {viewedClasses.length} record{viewedClasses.length !== 1 ? "s" : ""}
           </p>
         </div>
 
         {/* Responsive grid — 1 / 2 / 3 cols */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
           {viewedClasses.map((cls) => (
             <RecordCard
               key={cls.classId}
               cls={cls}
+              idNumber={session.idNumber}
               onViewFull={() => handleViewFull(cls)}
             />
           ))}

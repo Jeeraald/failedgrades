@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
+import bgImage from "../assets/background.jpg";
 import { motion } from "framer-motion";
 import Confetti from "react-confetti";
 import { useSessionTimeout } from "../utils/useSessionTimeout";
 import SessionTimeoutModal from "../components/SessionTimeoutModal";
+import { toNum, termGradeKey, termLabel, termBadgeClass } from "../utils/studentSession";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,25 +48,6 @@ function markAsViewed(classId: string): void {
   } catch { /* ignore */ }
 }
 
-function toNum(val: unknown): number | null {
-  if (val === undefined || val === null || val === "") return null;
-  const n = Number(val);
-  return Number.isNaN(n) ? null : n;
-}
-
-const termGradeKey = (term: string) =>
-  term === "Final" ? "finalGrade" : term === "Summer" ? "summerGrade" : "midtermGrade";
-
-const termDisplay = (term: string) =>
-  term === "Final" ? "Final" : term === "Summer" ? "Summer Term" : "Midterm";
-
-const termBadgeClass = (term: string) =>
-  term === "Final"
-    ? "bg-orange-100 text-orange-600"
-    : term === "Summer"
-    ? "bg-teal-100 text-teal-600"
-    : "bg-indigo-100 text-indigo-600";
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function GradeReveal() {
@@ -75,25 +58,37 @@ export default function GradeReveal() {
     height: window.innerHeight,
   });
   const [showConfetti, setShowConfetti] = useState(false);
+  // Gates the grade reveal until server confirms the class is still enabled/posted.
+  // Prevents any temporary display of grades from a disabled class.
+  const [accessVerified, setAccessVerified] = useState(false);
 
-  // Verify grades are still posted, THEN mark as viewed
   useEffect(() => {
     if (!record?.classId) return;
     const classId = String(record.classId);
-    getDoc(doc(db, "classes", classId))
-      .then((snap) => {
-        if (!snap.exists() || !snap.data().gradesPosted) {
-          // Instructor unposted after student had it in session — block access
+    let viewed = false;
+
+    const unsub = onSnapshot(
+      doc(db, "classes", classId),
+      { includeMetadataChanges: true },
+      (snap) => {
+        // Skip cache fires — only trust server-confirmed access state
+        if (snap.metadata.fromCache) return;
+        if (!snap.exists() || snap.data().enabled === false || !snap.data().gradesPosted) {
           sessionStorage.removeItem("studentRecord");
           navigate("/subject-select", { replace: true });
           return;
         }
-        markAsViewed(classId);
-      })
-      .catch(() => {
+        if (!viewed) { markAsViewed(classId); viewed = true; }
+        setAccessVerified(true);
+      },
+      () => {
         // Network error — still allow viewing rather than blocking on connectivity
-        markAsViewed(classId);
-      });
+        if (!viewed) { markAsViewed(classId); viewed = true; }
+        setAccessVerified(true);
+      }
+    );
+
+    return () => unsub();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Window resize
@@ -104,17 +99,19 @@ export default function GradeReveal() {
     return () => window.removeEventListener("resize", handler);
   }, []);
 
-  // Confetti for passing grades
+  // Confetti for passing grades — only fires after server confirms access
   useEffect(() => {
-    if (!record) return;
+    if (!record || !accessVerified) return;
     const key = termGradeKey(String(record.term ?? "Midterm"));
     const g = toNum(record[key]);
-    if (g !== null && g < 3.25) {
+    if (g === null || g >= 3.25) return;
+    let tStop: ReturnType<typeof setTimeout>;
+    const tStart = setTimeout(() => {
       setShowConfetti(true);
-      const t = setTimeout(() => setShowConfetti(false), 8000);
-      return () => clearTimeout(t);
-    }
-  }, [record]);
+      tStop = setTimeout(() => setShowConfetti(false), 8000);
+    }, 0);
+    return () => { clearTimeout(tStart); clearTimeout(tStop); };
+  }, [record, accessVerified]);
 
   const { showModal: showTimeout, countdown, extendSession, logoutNow } = useSessionTimeout({
     warningDelayMs: 5 * 60 * 1000,
@@ -129,6 +126,20 @@ export default function GradeReveal() {
 
   if (!record) return <Navigate to="/subject-select" replace />;
 
+  // Show spinner until server confirms the class is still enabled and grades posted.
+  // Prevents any momentary display of grades from a disabled/unposted class.
+  if (!accessVerified) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center relative"
+        style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center" }}
+      >
+        <div className="absolute inset-0 bg-black/50" />
+        <i className="pi pi-spin pi-spinner text-white text-4xl relative z-10"></i>
+      </div>
+    );
+  }
+
   const term = String(record.term ?? "Midterm");
   const gradeKey = termGradeKey(term);
   const grade = toNum(record[gradeKey]);
@@ -137,7 +148,11 @@ export default function GradeReveal() {
 
   return (
     <>
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-200 p-6 relative">
+    <div
+      className="min-h-screen flex items-center justify-center p-6 relative"
+      style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
+    >
+      <div className="absolute inset-0 bg-black/50" />
       {showConfetti && (
         <Confetti
           width={windowSize.width}
@@ -153,16 +168,12 @@ export default function GradeReveal() {
         initial={{ opacity: 0, y: 32 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: "easeOut" }}
-        className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center relative z-10"
+        className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-5 sm:p-8 text-center relative z-10"
       >
         {/* Top decorative stripe */}
         <div
           className={`absolute top-0 left-0 right-0 h-1.5 rounded-t-3xl ${
-            term === "Final"
-              ? "bg-orange-400"
-              : term === "Summer"
-              ? "bg-teal-400"
-              : "bg-blue-500"
+            term === "Final" ? "bg-orange-400" : term === "Midyear" ? "bg-teal-400" : "bg-blue-500"
           }`}
         />
 
@@ -178,7 +189,7 @@ export default function GradeReveal() {
           <span
             className={`inline-block mt-2.5 text-xs px-3 py-1 rounded-full font-medium ${termBadgeClass(term)}`}
           >
-            {termDisplay(term)} Term
+            {termLabel(term)} Term
           </span>
         </div>
 
@@ -187,7 +198,7 @@ export default function GradeReveal() {
 
         {/* Grade label */}
         <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">
-          {termDisplay(term)} Grade
+          {termLabel(term)} Grade
         </p>
 
         {/* Grade number — spring scale-in */}
@@ -198,7 +209,7 @@ export default function GradeReveal() {
           className="mb-3"
         >
           <span
-            className={`text-8xl font-black leading-none ${
+            className={`text-6xl sm:text-8xl font-black leading-none ${
               grade === null
                 ? "text-gray-300"
                 : isPassed

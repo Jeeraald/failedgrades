@@ -1,5 +1,10 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { saveDraft, clearDraft } from "../utils/offlineStorage";
+import { toTitleCase } from "../utils/formatters";
+import { validatePastePayload, sanitizePastedGrade, sanitizePastedText } from "../utils/security";
+import { useOnlineStatus } from "../utils/useOnlineStatus";
+import ConnectionStatus from "../components/ConnectionStatus";
 import * as XLSX from "xlsx-js-style";
 import {
   collection,
@@ -25,7 +30,8 @@ type StudentRecord = {
   // Stable Firestore document ID — never changes even when idNumber is edited.
   // All Firestore writes must target _key (not idNumber) to avoid creating duplicate docs.
   _key?: string | number;
-  [key: string]: string | number | undefined;
+  posted?: boolean;
+  [key: string]: string | number | boolean | undefined;
 };
 
 type CustomColumn = {
@@ -42,7 +48,7 @@ type ClassInfo = {
   classType: "Lecture" | "Laboratory" | "Both";
   lecturePercent: number;
   labPercent: number;
-  term?: "Midterm" | "Final" | "Summer";
+  term?: "Midterm" | "Final" | "Midyear";
   gradesPosted?: boolean;
 };
 
@@ -77,6 +83,7 @@ export default function InstructorUploadGrades() {
   const toast = useRef<Toast | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const infoRef = useRef<HTMLDivElement | null>(null);
+  const hintsRef = useRef<HTMLDivElement | null>(null);
   // Dirty tracking — which student IDs have unsaved local changes
   const dirtyIdsRef = useRef<Set<string>>(new Set());
   const hasSeenUserRef = useRef(false);
@@ -97,7 +104,13 @@ export default function InstructorUploadGrades() {
   const [records, setRecords] = useState<StudentRecord[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [progressToast, setProgressToast] = useState<{
+    current: number;
+    total: number;
+    type: "upload" | "delete";
+  } | null>(null);
   const [showInfo, setShowInfo] = useState(false);
+  const [showHints, setShowHints] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [first, setFirst] = useState(0);
   const [rows, setRows] = useState(10);
@@ -177,14 +190,25 @@ export default function InstructorUploadGrades() {
   const handleCellChangeRef = useRef<(id: string, field: string, value: string | number) => void>(() => {});
   const tableWrapperRef = useRef<HTMLDivElement | null>(null);
   // Tracks the value of a cell at the moment it receives focus, for blur-based undo
-  const editingCellRef = useRef<{ idNumber: string; field: string; prevValue: string | number | undefined } | null>(null);
+  const editingCellRef = useRef<{ idNumber: string; field: string; prevValue: string | number | undefined; _key?: string | number } | null>(null);
   // Undo stack
   const [undoStack, setUndoStack] = useState<UndoSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoSnapshot[]>([]);
   const undoStackRef = useRef<UndoSnapshot[]>([]);
+  const redoStackRef = useRef<UndoSnapshot[]>([]);
   const classIdRef = useRef<string | undefined>(undefined);
   const uidRef = useRef<string | undefined>(undefined);
+
+  // Cut selection (orange dashed border, cleared on paste/escape)
+  const [cutSel, setCutSel] = useState<{
+    minR: number; maxR: number; minC: number; maxC: number;
+  } | null>(null);
+  const cutSelRef = useRef<{ minR: number; maxR: number; minC: number; maxC: number } | null>(null);
   const classInfoRef = useRef<ClassInfo | null>(null);
   const recordsRef = useRef<StudentRecord[]>([]);
+  // Tracks in-flight ID renames: newIdNumber → original Firestore doc ID.
+  // Needed because recordsRef may lag the render cycle when typing fast.
+  const pendingRenamesRef = useRef<Map<string, string>>(new Map());
 
   // Conflict resolution
   const [pendingUpload, setPendingUpload] = useState<{
@@ -196,14 +220,56 @@ export default function InstructorUploadGrades() {
   const [conflictView, setConflictView] = useState<"choose" | "review">("choose");
 
   const uid = auth.currentUser?.uid;
+  const { isOnline, status: connStatus } = useOnlineStatus();
 
   // Spreadsheet: mouseup + keyboard (delete/undo) + click-outside (all via refs — no stale closures)
   useEffect(() => {
+    // ── Shared helpers (captured via refs — always fresh) ────────────────
+    const colToField = (c: number): string | null => {
+      if (c === 0) return "idNumber";
+      if (c === 1) return "lastName";
+      if (c === 2) return "firstName";
+      const cols = allDataColsRef.current;
+      const di = c - 3;
+      if (di >= 0 && di < cols.length) return cols[di].key;
+      if (c === 3 + cols.length) return termGradeKeyRef.current;
+      return null;
+    };
+
+    const getCellVal = (student: StudentRecord, c: number): string => {
+      const f = colToField(c);
+      if (!f) return "";
+      const v = student[f];
+      return v !== undefined && v !== null && v !== "" ? String(v) : "";
+    };
+
+    const writeCellDeletes = async (
+      toDelete: { idNumber: string; field: string }[],
+      cid: string,
+      uid: string | undefined,
+      srcRecs: StudentRecord[]
+    ) => {
+      const grouped = new Map<string, string[]>();
+      for (const { idNumber, field } of toDelete) {
+        const rec = srcRecs.find(r => String(r.idNumber) === idNumber);
+        const docId = String(rec?._key ?? idNumber);
+        if (!grouped.has(docId)) grouped.set(docId, []);
+        grouped.get(docId)!.push(field);
+      }
+      await Promise.all(Array.from(grouped.entries()).map(async ([docId, fields]) => {
+        const payload: Record<string, ReturnType<typeof deleteField>> = {};
+        fields.forEach(f => { payload[f] = deleteField(); });
+        await setDoc(doc(db, "classes", cid, "students", docId), { ...payload, instructorUid: uid }, { merge: true });
+        await setDoc(doc(db, "students", docId), { ...payload, classId: cid, instructorUid: uid }, { merge: true });
+      }));
+    };
+
     const onMouseUp = () => { isDraggingRef.current = false; };
 
     const onMouseDown = (e: MouseEvent) => {
       // Close info popover when clicking outside it
       if (infoRef.current && !infoRef.current.contains(e.target as Node)) setShowInfo(false);
+      if (hintsRef.current && !hintsRef.current.contains(e.target as Node)) setShowHints(false);
       // Clear cell selection when clicking outside the table
       if (tableWrapperRef.current && !tableWrapperRef.current.contains(e.target as Node)) {
         setCellSel(null);
@@ -219,8 +285,15 @@ export default function InstructorUploadGrades() {
         const snapshot = stack[stack.length - 1];
         setUndoStack(prev => prev.slice(0, -1));
 
-        // Restore UI immediately — match by idNumber in current state
+        // Capture current values as redo snapshot before restoring
         const recs = recordsRef.current;
+        const redoSnap: UndoSnapshot = snapshot.map(({ idNumber, field }) => {
+          const rec = recs.find(r => r.idNumber === idNumber);
+          return { idNumber, field, prevValue: rec?.[field] as string | number | undefined };
+        });
+        setRedoStack(prev => [...prev.slice(-19), redoSnap]);
+
+        // Restore UI immediately — match by idNumber in current state
         setRecords(prev => {
           const patch = new Map<string, Record<string, string | number>>();
           snapshot.forEach(({ idNumber, field, prevValue }) => {
@@ -270,32 +343,17 @@ export default function InstructorUploadGrades() {
         e.preventDefault();
 
         const recs = paginatedRecordsRef.current;
-        const cols = allDataColsRef.current;
-        const gKey = termGradeKeyRef.current;
-
         const minR = Math.min(cSel.anchor.r, cSel.end.r);
         const maxR = Math.max(cSel.anchor.r, cSel.end.r);
         const minC = Math.min(cSel.anchor.c, cSel.end.c);
         const maxC = Math.max(cSel.anchor.c, cSel.end.c);
-
-        const getVal = (student: StudentRecord, c: number): string => {
-          let f: string | null = null;
-          if      (c === 0)                             f = "idNumber";
-          else if (c === 1)                             f = "lastName";
-          else if (c === 2)                             f = "firstName";
-          else if (c >= 3 && c < 3 + cols.length)      f = cols[c - 3].key;
-          else if (c === 3 + cols.length)               f = gKey;
-          if (!f) return "";
-          const v = student[f];
-          return (v !== undefined && v !== null && v !== "") ? String(v) : "";
-        };
 
         const tsvRows: string[] = [];
         for (let r = minR; r <= maxR; r++) {
           const student = recs[r];
           if (!student) { tsvRows.push(""); continue; }
           const cells: string[] = [];
-          for (let c = minC; c <= maxC; c++) cells.push(getVal(student, c));
+          for (let c = minC; c <= maxC; c++) cells.push(getCellVal(student, c));
           tsvRows.push(cells.join("\t"));
         }
 
@@ -316,18 +374,172 @@ export default function InstructorUploadGrades() {
         return;
       }
 
+      // ── Ctrl+Y  redo ──────────────────────────────────────────────────
+      if ((e.ctrlKey || e.metaKey) && e.key === "y") {
+        e.preventDefault();
+        const rStack = redoStackRef.current;
+        if (rStack.length === 0) return;
+        const snapshot = rStack[rStack.length - 1];
+        setRedoStack(prev => prev.slice(0, -1));
+
+        // Capture current values as new undo snapshot
+        const recs = recordsRef.current;
+        const undoSnap: UndoSnapshot = snapshot.map(({ idNumber, field }) => {
+          const rec = recs.find(r => r.idNumber === idNumber);
+          return { idNumber, field, prevValue: rec?.[field] as string | number | undefined };
+        });
+        setUndoStack(prev => [...prev.slice(-19), undoSnap]);
+
+        // Apply redo (restore prevValues = "future" values saved during undo)
+        setRecords(prev => {
+          const patch = new Map<string, Record<string, string | number>>();
+          snapshot.forEach(({ idNumber, field, prevValue }) => {
+            if (!patch.has(idNumber)) patch.set(idNumber, {});
+            patch.get(idNumber)![field] = prevValue ?? "";
+          });
+          return prev.map(r => { const u = patch.get(r.idNumber); return u ? { ...r, ...u } : r; });
+        });
+
+        snapshot.forEach(({ idNumber }) => {
+          const rec = recs.find(r => r.idNumber === idNumber);
+          dirtyIdsRef.current.add(String(rec?._key ?? idNumber));
+        });
+        setIsDirty(true);
+
+        const cid = classIdRef.current;
+        const rUid = uidRef.current;
+        if (!cid) return;
+        try {
+          const grouped = new Map<string, { field: string; prevValue: string | number | undefined }[]>();
+          snapshot.forEach(({ idNumber, field, prevValue }) => {
+            const rec = recs.find(r => r.idNumber === idNumber);
+            const docId = String(rec?._key ?? idNumber);
+            if (!grouped.has(docId)) grouped.set(docId, []);
+            grouped.get(docId)!.push({ field, prevValue });
+          });
+          await Promise.all(Array.from(grouped.entries()).map(async ([docId, entries]) => {
+            const payload: Record<string, string | number | ReturnType<typeof deleteField>> = {};
+            entries.forEach(({ field, prevValue }) => {
+              payload[field] = (prevValue !== undefined && prevValue !== "") ? prevValue : deleteField();
+            });
+            await setDoc(doc(db, "classes", cid, "students", docId), { ...payload, instructorUid: rUid }, { merge: true });
+            await setDoc(doc(db, "students", docId), { ...payload, classId: cid, instructorUid: rUid }, { merge: true });
+          }));
+        } catch (err) { console.error("Redo failed:", err); }
+        return;
+      }
+
+      // ── Ctrl+X  cut selected range ─────────────────────────────────────
+      if ((e.ctrlKey || e.metaKey) && e.key === "x") {
+        const cSel = cellSelRef.current;
+        if (!cSel) return;
+        const isSelRange = cSel.anchor.r !== cSel.end.r || cSel.anchor.c !== cSel.end.c;
+        if (!isSelRange) return; // single cell — let browser handle
+
+        e.preventDefault();
+
+        const recs = paginatedRecordsRef.current;
+        const minR = Math.min(cSel.anchor.r, cSel.end.r);
+        const maxR = Math.max(cSel.anchor.r, cSel.end.r);
+        const minC = Math.min(cSel.anchor.c, cSel.end.c);
+        const maxC = Math.max(cSel.anchor.c, cSel.end.c);
+
+        const tsvRows: string[] = [];
+        for (let r = minR; r <= maxR; r++) {
+          const student = recs[r];
+          if (!student) { tsvRows.push(""); continue; }
+          const cells: string[] = [];
+          for (let c = minC; c <= maxC; c++) cells.push(getCellVal(student, c));
+          tsvRows.push(cells.join("\t"));
+        }
+
+        navigator.clipboard.writeText(tsvRows.join("\n"))
+          .then(() => {
+            const nR = maxR - minR + 1;
+            const nC = maxC - minC + 1;
+            setCutSel({ minR, maxR, minC, maxC });
+            setCopiedSel(null);
+            toast.current?.show({
+              severity: "info",
+              summary: "Cut",
+              detail: `${nR} row${nR !== 1 ? "s" : ""} × ${nC} col${nC !== 1 ? "s" : ""} cut — paste to move`,
+              life: 2000,
+            });
+          })
+          .catch((err) => console.warn("Cut failed:", err));
+        return;
+      }
+
+      // ── Tab  navigate between cells ────────────────────────────────────
+      if (e.key === "Tab" && tableWrapperRef.current?.contains(document.activeElement)) {
+        e.preventDefault();
+        const cSel = cellSelRef.current;
+        if (!cSel) return;
+        const recs = paginatedRecordsRef.current;
+        const cols = allDataColsRef.current;
+        const totalCols = 3 + cols.length + 1;
+        const totalRows = recs.length;
+
+        let r = Math.min(cSel.anchor.r, cSel.end.r);
+        let c = Math.min(cSel.anchor.c, cSel.end.c);
+
+        if (e.shiftKey) {
+          c--; if (c < 0) { c = totalCols - 1; r = Math.max(0, r - 1); }
+        } else {
+          c++; if (c >= totalCols) { c = 0; r = Math.min(totalRows - 1, r + 1); }
+        }
+
+        setCellSel({ anchor: { r, c }, end: { r, c } });
+        const tbodyRows = tableWrapperRef.current?.querySelectorAll("tbody tr");
+        if (tbodyRows?.[r]) {
+          const tds = tbodyRows[r].querySelectorAll("td");
+          const td = tds[c + 1]; // +1 to skip checkbox column
+          const input = td?.querySelector("input:not([type='checkbox'])") as HTMLInputElement | null;
+          input?.focus();
+        }
+        return;
+      }
+
+      // ── Arrow Up/Down  navigate rows ───────────────────────────────────
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") &&
+          tableWrapperRef.current?.contains(document.activeElement)) {
+        const active = document.activeElement as HTMLElement;
+        // Only intercept on number inputs (text inputs use arrows for cursor)
+        if (active.tagName === "INPUT" && (active as HTMLInputElement).type === "number") {
+          e.preventDefault();
+          const cSel = cellSelRef.current;
+          if (!cSel) return;
+          const recs = paginatedRecordsRef.current;
+          const totalRows = recs.length;
+          let r = cSel.anchor.r;
+          const c = cSel.anchor.c;
+
+          if (e.key === "ArrowDown") r = Math.min(r + 1, totalRows - 1);
+          else                       r = Math.max(r - 1, 0);
+
+          setCellSel({ anchor: { r, c }, end: { r, c } });
+          const tbodyRows = tableWrapperRef.current?.querySelectorAll("tbody tr");
+          if (tbodyRows?.[r]) {
+            const tds = tbodyRows[r].querySelectorAll("td");
+            const td = tds[c + 1];
+            const input = td?.querySelector("input:not([type='checkbox'])") as HTMLInputElement | null;
+            input?.focus();
+          }
+        }
+        return;
+      }
+
+      // ── Escape always clears copy/cut highlights regardless of active selection ─
+      if (e.key === "Escape") { setCellSel(null); setCopiedSel(null); setCutSel(null); return; }
+
       // ── Selection shortcuts ───────────────────────────────────────────
       const sel = cellSelRef.current;
       if (!sel) return;
       const isRange = sel.anchor.r !== sel.end.r || sel.anchor.c !== sel.end.c;
 
-      if (e.key === "Escape") { setCellSel(null); setCopiedSel(null); return; }
-
       if ((e.key === "Delete" || e.key === "Backspace") && isRange) {
         e.preventDefault();
         const recs = paginatedRecordsRef.current;
-        const cols = allDataColsRef.current;
-        const gradeKey = termGradeKeyRef.current;
         const cid = classIdRef.current;
         const uid = uidRef.current;
         const minR = Math.min(sel.anchor.r, sel.end.r);
@@ -335,18 +547,15 @@ export default function InstructorUploadGrades() {
         const minC = Math.min(sel.anchor.c, sel.end.c);
         const maxC = Math.max(sel.anchor.c, sel.end.c);
 
-        // Collect cells to clear
+        // Collect cells to clear — column 0 (idNumber) is intentionally excluded
         const snapshot: UndoSnapshot = [];
         const toDelete: { idNumber: string; field: string }[] = [];
         for (let r = minR; r <= maxR; r++) {
           const student = recs[r];
           if (!student) continue;
           for (let c = minC; c <= maxC; c++) {
-            let field: string | null = null;
-            if (c === 1) field = "lastName";
-            else if (c === 2) field = "firstName";
-            else if (c >= 3 && c < 3 + cols.length) field = cols[c - 3].key;
-            else if (c === 3 + cols.length) field = gradeKey;
+            if (c === 0) continue; // idNumber must not be cleared via Delete key
+            const field = colToField(c);
             if (!field) continue;
             snapshot.push({ idNumber: student.idNumber, field, prevValue: student[field] as string | number | undefined });
             toDelete.push({ idNumber: student.idNumber, field });
@@ -354,8 +563,9 @@ export default function InstructorUploadGrades() {
         }
         if (toDelete.length === 0) return;
 
-        // Push undo snapshot (cap at 20 entries)
+        // Push undo snapshot (cap at 20 entries), clear redo
         setUndoStack(prev => [...prev.slice(-19), snapshot]);
+        setRedoStack([]);
 
         // Optimistic UI update — all cells in one setState call
         setRecords(prev => {
@@ -367,23 +577,9 @@ export default function InstructorUploadGrades() {
           return prev.map(r => { const u = patch.get(r.idNumber); return u ? { ...r, ...u } : r; });
         });
 
-        // Immediate parallel Firestore writes (no debounce — fixes single-timer cancellation bug)
         if (!cid) return;
         try {
-          const grouped = new Map<string, string[]>();
-          const recs = paginatedRecordsRef.current;
-          toDelete.forEach(({ idNumber, field }) => {
-            const rec = recs.find(r => r.idNumber === idNumber);
-            const docId = String(rec?._key ?? idNumber);
-            if (!grouped.has(docId)) grouped.set(docId, []);
-            grouped.get(docId)!.push(field);
-          });
-          await Promise.all(Array.from(grouped.entries()).map(async ([docId, fields]) => {
-            const payload: Record<string, ReturnType<typeof deleteField>> = {};
-            fields.forEach(f => { payload[f] = deleteField(); });
-            await setDoc(doc(db, "classes", cid, "students", docId), { ...payload, instructorUid: uid }, { merge: true });
-            await setDoc(doc(db, "students", docId), { ...payload, classId: cid, instructorUid: uid }, { merge: true });
-          }));
+          await writeCellDeletes(toDelete, cid, uid, paginatedRecordsRef.current);
         } catch (err) { console.error("Bulk delete failed:", err); }
       }
     };
@@ -418,7 +614,7 @@ export default function InstructorUploadGrades() {
         const conflict: DuplicateConflict = {
           studentId: pastedId,
           existing:  duplicate,
-          pasted:    currentStudent ? { ...currentStudent, idNumber: pastedId } : { idNumber: pastedId },
+          pasted:    currentStudent ? { ...currentStudent, idNumber: pastedId } as unknown as Record<string, string | number> : { idNumber: pastedId },
         };
         pendingPasteRef.current = {
           replaceAll: () => {
@@ -440,24 +636,19 @@ export default function InstructorUploadGrades() {
         .split("\n")
         .map((row) => row.split("\t"));
 
-      if (pastedRows.length === 0) return;
+      // ── Security: validate payload before touching any state ─────────
+      const payloadCheck = validatePastePayload(pastedRows);
+      if (!payloadCheck.ok) {
+        toast.current?.show({ severity: "warn", summary: "Paste Blocked", detail: payloadCheck.reason, life: 4000 });
+        return;
+      }
 
       const anchorR = Math.min(sel.anchor.r, sel.end.r);
       const anchorC = Math.min(sel.anchor.c, sel.end.c);
       const recs    = paginatedRecordsRef.current;
       const allRec  = recordsRef.current;
-      const cols    = allDataColsRef.current;
-      const gKey    = termGradeKeyRef.current;
 
-      const colToField = (c: number): string | null => {
-        if (c === 0) return "idNumber";
-        if (c === 1) return "lastName";
-        if (c === 2) return "firstName";
-        const di = c - 3;
-        if (di >= 0 && di < cols.length) return cols[di].key;
-        if (c === 3 + cols.length) return gKey;
-        return null;
-      };
+      // colToField is defined at the top of this useEffect and is always fresh via refs
 
       // ── Phase 1: parse all rows synchronously ────────────────────────
       type ExistingUpdate = { idNumber: string; field: string; value: string | number; prevValue?: string | number };
@@ -480,7 +671,10 @@ export default function InstructorUploadGrades() {
             if (!field) continue;
             const raw = pastedCells[pc].trim();
             const isNumeric = tableCol >= 3;
-            const value: string | number = isNumeric ? (raw === "" ? "" : Number(raw)) : raw;
+            // Sanitize: clamp grades to valid range, strip injection chars from text
+            const value: string | number = isNumeric
+              ? sanitizePastedGrade(raw)
+              : sanitizePastedText(raw);
             snapshot.push({ idNumber: student.idNumber, field, prevValue: student[field] as string | number | undefined });
             existingUpdates.push({ idNumber: student.idNumber, field, value });
           }
@@ -493,18 +687,18 @@ export default function InstructorUploadGrades() {
             if (!field) continue;
             const raw = pastedCells[pc].trim();
             const isNumeric = tableCol >= 3;
-            fields[field] = isNumeric ? (raw === "" ? "" : Number(raw)) : raw;
+            fields[field] = isNumeric ? sanitizePastedGrade(raw) : sanitizePastedText(raw);
           }
           const studentId =
             typeof fields.idNumber === "string" && fields.idNumber.trim()
-              ? fields.idNumber.trim()
+              ? sanitizePastedText(String(fields.idNumber), 50).trim()
               : `paste_${Date.now()}_${pr}`;
           newRows.push({ studentId, fields });
         }
       }
 
       // ── Phase 2: separate duplicates from genuinely new rows ─────────
-      const existingIdSet = new Set(allRec.map((r) => r.idNumber));
+      const existingIdSet = new Set(allRec.map((r) => String(r.idNumber)));
       const genuinelyNew  = newRows.filter((nr) => !existingIdSet.has(nr.studentId));
       const duplicateRows = newRows.filter((nr) =>  existingIdSet.has(nr.studentId));
 
@@ -525,7 +719,11 @@ export default function InstructorUploadGrades() {
               return patch ? { ...r, ...patch } : r;
             })
           );
-          patchByStudent.forEach((_, id) => dirtyIdsRef.current.add(id));
+          // Use _key (stable doc ID) for dirty tracking — idNumber may differ after a rename
+          patchByStudent.forEach((_, idNum) => {
+            const rec = recordsRef.current.find(r => String(r.idNumber) === idNum);
+            dirtyIdsRef.current.add(String(rec?._key ?? idNum));
+          });
           setIsDirty(true);
         }
 
@@ -554,6 +752,7 @@ export default function InstructorUploadGrades() {
         }
 
         if (snapshot.length > 0) setUndoStack((prev) => [...prev.slice(-19), snapshot]);
+        setRedoStack([]);
 
         const maxCols = Math.max(...pastedRows.map((r) => r.length));
         setCellSel({
@@ -561,15 +760,64 @@ export default function InstructorUploadGrades() {
           end:    { r: anchorR + pastedRows.length - 1, c: anchorC + maxCols - 1 },
         });
         setCopiedSel(null);
+
+        // ── If this was a cut operation, clear the source cells ───────────
+        const cSel = cutSelRef.current;
+        if (cSel) {
+          setCutSel(null);
+          const srcRecs = paginatedRecordsRef.current;
+          const srcCols = allDataColsRef.current;
+          const srcGKey = termGradeKeyRef.current;
+          const cid = classIdRef.current;
+          const dUid = uidRef.current;
+
+          const toClear: { idNumber: string; field: string }[] = [];
+          for (let r = cSel.minR; r <= cSel.maxR; r++) {
+            const student = srcRecs[r];
+            if (!student) continue;
+            for (let c = cSel.minC; c <= cSel.maxC; c++) {
+              let field: string | null = null;
+              if (c === 1) field = "lastName";
+              else if (c === 2) field = "firstName";
+              else if (c >= 3 && c < 3 + srcCols.length) field = srcCols[c - 3].key;
+              else if (c === 3 + srcCols.length) field = srcGKey;
+              if (field) toClear.push({ idNumber: student.idNumber, field });
+            }
+          }
+
+          if (toClear.length > 0) {
+            const patchByStudent = new Map<string, Record<string, string>>();
+            toClear.forEach(({ idNumber, field }) => {
+              if (!patchByStudent.has(idNumber)) patchByStudent.set(idNumber, {});
+              patchByStudent.get(idNumber)![field] = "";
+            });
+            setRecords((prev) => prev.map((r) => {
+              const p = patchByStudent.get(r.idNumber);
+              return p ? { ...r, ...p } : r;
+            }));
+            toClear.forEach(({ idNumber }) => {
+              const rec = srcRecs.find(r => r.idNumber === idNumber);
+              dirtyIdsRef.current.add(String(rec?._key ?? idNumber));
+            });
+            setIsDirty(true);
+
+            if (cid) {
+              writeCellDeletes(toClear, cid, dUid, srcRecs)
+                .catch(err => console.error("Cut clear failed:", err));
+            }
+          }
+        }
       };
 
       // ── Phase 4: show rich modal when duplicates are present ─────────
       if (duplicateRows.length > 0) {
-        const conflicts: DuplicateConflict[] = duplicateRows.map((nr) => ({
-          studentId: nr.studentId,
-          existing:  allRec.find((r) => r.idNumber === nr.studentId)!,
-          pasted:    nr.fields,
-        }));
+        const conflicts: DuplicateConflict[] = duplicateRows
+          .map((nr) => {
+            const existing = allRec.find((r) => String(r.idNumber) === nr.studentId);
+            if (!existing) return null;
+            return { studentId: nr.studentId, existing, pasted: nr.fields };
+          })
+          .filter((c): c is DuplicateConflict => c !== null);
         pendingPasteRef.current = {
           replaceAll:  () => applyPaste([...genuinelyNew, ...duplicateRows]),
           skipDups:    () => applyPaste(genuinelyNew),
@@ -632,11 +880,16 @@ export default function InstructorUploadGrades() {
     const unsubscribe = onSnapshot(
       collection(db, "classes", classId, "students"),
       (snapshot) => {
-        const incoming = snapshot.docs.map((docSnap) => ({
-          _key:     docSnap.id,   // stable doc ID — must come before data spread
-          idNumber: docSnap.id,   // default; data spread may override with stored value
-          ...(docSnap.data() as Omit<StudentRecord, "idNumber" | "_key">),
-        })) as StudentRecord[];
+        const incoming = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Record<string, unknown>;
+          return {
+            ...data,
+            _key:     docSnap.id,
+            // Always coerce to string — Firestore may store idNumber as a number
+            // (e.g. from Excel imports), which breaks all strict-equality comparisons.
+            idNumber: String(data.idNumber ?? docSnap.id),
+          } as StudentRecord;
+        });
 
         setRecords(prev => {
           // Index by _key (stable doc ID) rather than idNumber (editable)
@@ -650,10 +903,13 @@ export default function InstructorUploadGrades() {
             return newRec;
           });
 
-          // Preserve local-only dirty rows not yet committed to Firestore
+          // Preserve local-only dirty rows not yet committed to Firestore.
+          // Exception: if the incoming snapshot already has a record with this row's
+          // displayed idNumber, the rename already committed — don't keep the stale copy.
           const localOnly = prev.filter(r => {
             const key = String(r._key ?? r.idNumber);
-            return dirtyIdsRef.current.has(key) && !incomingKeys.has(key);
+            if (!dirtyIdsRef.current.has(key) || incomingKeys.has(key)) return false;
+            return !incoming.some(nr => String(nr.idNumber) === String(r.idNumber));
           });
 
           return [...fromFirestore, ...localOnly];
@@ -671,62 +927,6 @@ export default function InstructorUploadGrades() {
     [classId]
   );
 
-  const handleTogglePostGrades = () => {
-    if (!classId) return;
-    const isPosted = classInfo?.gradesPosted ?? false;
-
-    const doToggle = async () => {
-      const newValue = !isPosted;
-      try {
-        await updateDoc(doc(db, "classes", classId), {
-          gradesPosted: newValue,
-          gradesPostedAt: newValue ? serverTimestamp() : null,
-        });
-        setClassInfo((prev) => prev ? { ...prev, gradesPosted: newValue } : prev);
-        toast.current?.show({
-          severity: newValue ? "success" : "warn",
-          summary: newValue ? "Grades Posted" : "Grades Unposted",
-          detail: newValue
-            ? "Students can now view their grades."
-            : "Grades are now hidden from students.",
-          life: 3000,
-        });
-        if (uid) logActivity(uid, {
-          module: "Upload Grades",
-          action: newValue ? "Grades Posted" : "Grades Unposted",
-          affectedItem: classInfo?.courseCode ?? classId,
-          result: "Success",
-        }).catch(() => {});
-      } catch (err) {
-        console.error("Failed to toggle post grades:", err);
-        toast.current?.show({ severity: "error", summary: "Error", detail: "Could not update posting status.", life: 3000 });
-      }
-    };
-
-    if (!isPosted) {
-      confirmDialog({
-        message: "Have you double-checked all grades? Once posted, students will be able to view their grades immediately.",
-        header: "Post Grades",
-        icon: "pi pi-send",
-        acceptLabel: "Yes, Post Grades",
-        rejectLabel: "Cancel",
-        acceptClassName: "custom-yes",
-        rejectClassName: "custom-no",
-        accept: doToggle,
-      });
-    } else {
-      confirmDialog({
-        message: "Students will no longer be able to view their grades after unposting. Are you sure you want to proceed?",
-        header: "Unpost Grades",
-        icon: "pi pi-exclamation-triangle",
-        acceptLabel: "Yes, Unpost",
-        rejectLabel: "Cancel",
-        acceptClassName: "custom-yes",
-        rejectClassName: "custom-no",
-        accept: doToggle,
-      });
-    }
-  };
 
   // ── Manual save ─────────────────────────────────────────────────────────
   const handleSave = useCallback(async (silent = false) => {
@@ -749,12 +949,15 @@ export default function InstructorUploadGrades() {
         const batch = writeBatch(db);
         toSave.slice(i, i + CHUNK).forEach((student) => {
           const { _key, ...rest } = student;
-          const docId    = String(_key ?? student.idNumber); // stable Firestore doc ID
-          const newId    = student.idNumber;                 // possibly-edited display ID
+          // pendingRenamesRef is the authoritative original doc ID for renamed records;
+          // fall back to _key (set by onSnapshot) for unedited or paste-added records.
+          const newId    = String(student.idNumber);
+          const docId    = pendingRenamesRef.current.get(newId) ?? String(_key ?? newId);
           const isRename = docId !== newId;
 
           if (isRename) {
-            // Copy data to the new doc ID, then delete the old one
+            // Copy data to the new doc ID, then delete the old one.
+            // pendingRenamesRef[newId] is the authoritative original doc ID; _key is fallback.
             batch.set(doc(db, "classes", cid, "students", newId),
               { ...rest, instructorUid: currentUid });
             batch.delete(doc(db, "classes", cid, "students", docId));
@@ -772,7 +975,9 @@ export default function InstructorUploadGrades() {
         await batch.commit();
       }
       dirtyIdsRef.current.clear();
+      toSave.forEach(s => pendingRenamesRef.current.delete(s.idNumber));
       setIsDirty(false);
+      if (classIdRef.current) clearDraft(classIdRef.current);
       if (!silent) toast.current?.show({ severity: "success", summary: "Saved", detail: "All changes saved.", life: 2000 });
     } catch (err) {
       console.error("Save failed:", err);
@@ -806,17 +1011,34 @@ export default function InstructorUploadGrades() {
   }, [handleSave]);
 
   const handleCellChange = (idNumber: string, field: string, value: string | number) => {
-    // Look up the stable _key BEFORE updating state so dirty tracking is consistent
-    const rec = recordsRef.current.find(r => r.idNumber === idNumber);
-    const dirtyKey = String(rec?._key ?? idNumber);
-    setRecords((prev) => prev.map((r) => (r.idNumber === idNumber ? { ...r, [field]: value } : r)));
-    dirtyIdsRef.current.add(dirtyKey);
+    // Use the _key captured at focus time for stable identification.
+    // If the idNumber is being changed, the JSX re-renders with the new displayed id
+    // on every keystroke — using _key prevents matching the wrong student.
+    const stableKey = editingCellRef.current?._key
+      ? String(editingCellRef.current._key)
+      : String(recordsRef.current.find(r => String(r.idNumber) === idNumber)?._key ?? idNumber);
+
+    recordsRef.current = recordsRef.current.map((r) =>
+      String(r._key ?? r.idNumber) === stableKey ? { ...r, [field]: value } : r
+    );
+    setRecords(recordsRef.current);
+    dirtyIdsRef.current.add(stableKey);
     setIsDirty(true);
+
+    if (field === "idNumber") {
+      const newId = String(value);
+      // Replace any existing entry pointing to this stable key before setting the new one.
+      pendingRenamesRef.current.forEach((origin, key) => {
+        if (origin === stableKey) pendingRenamesRef.current.delete(key);
+      });
+      pendingRenamesRef.current.set(newId, stableKey);
+    }
   };
 
   // Called when a cell input gains focus — records the value before editing begins
   const handleCellFocus = (idNumber: string, field: string, prevValue: string | number | undefined) => {
-    editingCellRef.current = { idNumber, field, prevValue };
+    const rec = recordsRef.current.find(r => r.idNumber === idNumber);
+    editingCellRef.current = { idNumber, field, prevValue, _key: rec?._key };
   };
 
   // Called when a cell input loses focus — pushes an undo entry if the value changed
@@ -827,7 +1049,32 @@ export default function InstructorUploadGrades() {
     const prevStr = snap.prevValue === undefined || snap.prevValue === null || snap.prevValue === "" ? "" : String(snap.prevValue);
     const currStr = currentValue === undefined || currentValue === null || currentValue === "" ? "" : String(currentValue);
     if (prevStr === currStr) return; // no change — nothing to undo
+
+    if (field === "idNumber") {
+      const stableKey = String(snap._key ?? prevStr);
+      const isDuplicate = recordsRef.current.some(
+        r => String(r.idNumber) === currStr && String(r._key ?? r.idNumber) !== stableKey
+      );
+      if (isDuplicate) {
+        setRecords(prev => prev.map(r =>
+          String(r._key ?? r.idNumber) === stableKey ? { ...r, idNumber: prevStr } : r
+        ));
+        dirtyIdsRef.current.delete(stableKey);
+        // Remove the stale rename entry — without this, saving a different student
+        // whose idNumber happens to match currStr would trigger a spurious delete.
+        pendingRenamesRef.current.delete(currStr);
+        toast.current?.show({
+          severity: "error",
+          summary: "Duplicate ID",
+          detail: `ID "${currStr}" already exists in this class. Reverted to "${prevStr}".`,
+          life: 4000,
+        });
+        return;
+      }
+    }
+
     setUndoStack(prev => [...prev.slice(-19), [{ idNumber: currentIdNumber, field, prevValue: snap.prevValue }]]);
+    setRedoStack([]);
   };
 
   // ── Add Student Modal ────────────────────────────────────────────────
@@ -894,25 +1141,85 @@ export default function InstructorUploadGrades() {
       accept: async () => {
         if (!classId) return;
         const ids = [...selectedIds];
+
+        // Snapshot records before deletion so undo can restore them
+        const deletedRecords = recordsRef.current.filter(r => ids.includes(r.idNumber));
+
         // Resolve the stable _key for each selected idNumber
         const docKeys = ids.map(id => {
           const rec = recordsRef.current.find(r => r.idNumber === id);
           return String(rec?._key ?? id);
         });
+        setProgressToast({ current: 0, total: docKeys.length, type: "delete" });
+        let deleteDone = 0;
         const CHUNK = 200;
         for (let i = 0; i < docKeys.length; i += CHUNK) {
           const batch = writeBatch(db);
-          docKeys.slice(i, i + CHUNK).forEach(key => {
+          const chunk = docKeys.slice(i, i + CHUNK);
+          chunk.forEach(key => {
             batch.delete(doc(db, "classes", classId, "students", key));
             batch.delete(doc(db, "students", key));
           });
           await batch.commit();
+          deleteDone += chunk.length;
+          setProgressToast(p => p ? { ...p, current: deleteDone } : null);
         }
+        setProgressToast(null);
         // Clear dirty tracking using _key values
         docKeys.forEach(key => dirtyIdsRef.current.delete(key));
         if (dirtyIdsRef.current.size === 0) setIsDirty(false);
         setSelectedIds(new Set());
-        toast.current?.show({ severity: "success", summary: "Deleted", detail: `${ids.length} student(s) removed.`, life: 3000 });
+
+        const undoDelete = async () => {
+          if (!classId) return;
+          try {
+            const batch = writeBatch(db);
+            deletedRecords.forEach((rec) => {
+              const { _key, ...rest } = rec;
+              const key = String(_key ?? rec.idNumber);
+              batch.set(doc(db, "classes", classId, "students", key), { ...rest, instructorUid: uid });
+              batch.set(doc(db, "students", key), {
+                ...rest,
+                classId,
+                instructorUid: uid,
+                courseCode:  classInfo?.courseCode  ?? "",
+                subjectName: classInfo?.subjectName ?? "",
+                yearSection: classInfo?.yearSection ?? "",
+              });
+            });
+            await batch.commit();
+            toast.current?.show({
+              severity: "info",
+              summary: "Restored",
+              detail: `${deletedRecords.length} student(s) restored successfully.`,
+              life: 3000,
+            });
+          } catch {
+            toast.current?.show({
+              severity: "error",
+              summary: "Restore Failed",
+              detail: "Could not undo the deletion. Please try again.",
+              life: 3000,
+            });
+          }
+        };
+
+        toast.current?.show({
+          severity: "success",
+          summary: "Deleted",
+          detail: (
+            <span className="flex items-center justify-between gap-3 w-full">
+              <span>{ids.length} student(s) removed.</span>
+              <button
+                onClick={() => { toast.current?.clear(); undoDelete(); }}
+                className="shrink-0 px-3 py-1.5 text-xs font-bold rounded-md bg-white text-green-800 hover:bg-green-50 border border-green-200 shadow-sm transition"
+              >
+                Undo
+              </button>
+            </span>
+          ),
+          life: 5000,
+        });
         if (uid) logActivity(uid, { module: "Upload Grades", action: "Student(s) Removed", affectedItem: `${ids.length} student(s) from ${classInfo?.courseCode ?? classId}`, result: "Success" }).catch(() => {});
       },
     });
@@ -923,6 +1230,101 @@ export default function InstructorUploadGrades() {
       setSelectedIds(new Set(paginatedRecords.map((r) => r.idNumber)));
     } else {
       setSelectedIds(new Set());
+    }
+  };
+
+  const handlePostOrUnpost = () => {
+    // Determine mode from current selection + records state
+    const hasUnpostedSelected = selectedIds.size > 0 && [...selectedIds].some(
+      id => recordsRef.current.find(r => r.idNumber === id)?.posted !== true
+    );
+
+    if (hasUnpostedSelected) {
+      // ── POST: only the unposted rows in the current selection ────────────
+      const ids = [...selectedIds].filter(
+        id => recordsRef.current.find(r => r.idNumber === id)?.posted !== true
+      );
+      confirmDialog({
+        message: `Post grades for ${ids.length} student(s)? They will be able to view their grades immediately.`,
+        header: "Post Grades",
+        icon: "pi pi-send",
+        acceptLabel: "Yes, Post",
+        rejectLabel: "Cancel",
+        acceptClassName: "custom-yes",
+        rejectClassName: "custom-no",
+        accept: async () => {
+          if (!classId) return;
+          try {
+            const docKeys = ids.map(id => {
+              const rec = recordsRef.current.find(r => r.idNumber === id);
+              return String(rec?._key ?? id);
+            });
+            const needsClassUpdate = !classInfo?.gradesPosted;
+            const CHUNK = 200;
+            for (let i = 0; i < docKeys.length; i += CHUNK) {
+              const batch = writeBatch(db);
+              docKeys.slice(i, i + CHUNK).forEach(key => {
+                batch.update(doc(db, "classes", classId, "students", key), { posted: true });
+              });
+              if (i === 0 && needsClassUpdate) {
+                batch.update(doc(db, "classes", classId), { gradesPosted: true, gradesPostedAt: serverTimestamp() });
+              }
+              await batch.commit();
+            }
+            setRecords(prev => prev.map(r => ids.includes(r.idNumber) ? { ...r, posted: true } : r));
+            if (needsClassUpdate) setClassInfo(prev => prev ? { ...prev, gradesPosted: true } : prev);
+            toast.current?.show({ severity: "success", summary: "Grades Posted", detail: `${ids.length} student(s) can now view their grades.`, life: 3000 });
+            if (uid) logActivity(uid, { module: "Upload Grades", action: "Grades Posted", affectedItem: `${ids.length} student(s) in ${classInfo?.courseCode ?? classId}`, result: "Success" }).catch(() => {});
+          } catch {
+            toast.current?.show({ severity: "error", summary: "Error", detail: "Could not post grades. Please try again.", life: 3000 });
+          }
+        },
+      });
+    } else {
+      // ── UNPOST: selected posted rows, or ALL posted rows if nothing selected ──
+      const ids = selectedIds.size > 0
+        ? [...selectedIds].filter(id => recordsRef.current.find(r => r.idNumber === id)?.posted === true)
+        : recordsRef.current.filter(r => r.posted === true).map(r => r.idNumber);
+      if (ids.length === 0) return;
+      const label = selectedIds.size > 0 ? `${ids.length} selected student(s)` : `all ${ids.length} posted student(s)`;
+      confirmDialog({
+        message: `Unpost grades for ${label}? They will no longer be able to view their grades.`,
+        header: "Unpost Grades",
+        icon: "pi pi-eye-slash",
+        acceptLabel: "Yes, Unpost",
+        rejectLabel: "Cancel",
+        acceptClassName: "custom-yes",
+        rejectClassName: "custom-no",
+        accept: async () => {
+          if (!classId) return;
+          try {
+            const docKeys = ids.map(id => {
+              const rec = recordsRef.current.find(r => r.idNumber === id);
+              return String(rec?._key ?? id);
+            });
+            const CHUNK = 200;
+            for (let i = 0; i < docKeys.length; i += CHUNK) {
+              const batch = writeBatch(db);
+              docKeys.slice(i, i + CHUNK).forEach(key => {
+                batch.update(doc(db, "classes", classId, "students", key), { posted: false });
+              });
+              await batch.commit();
+            }
+            const remainingPosted = recordsRef.current.filter(
+              r => !ids.includes(r.idNumber) && r.posted === true
+            ).length;
+            if (remainingPosted === 0) {
+              await updateDoc(doc(db, "classes", classId), { gradesPosted: false, gradesPostedAt: null });
+              setClassInfo(prev => prev ? { ...prev, gradesPosted: false } : prev);
+            }
+            setRecords(prev => prev.map(r => ids.includes(r.idNumber) ? { ...r, posted: false } : r));
+            toast.current?.show({ severity: "warn", summary: "Grades Unposted", detail: `${ids.length} student(s) can no longer view their grades.`, life: 3000 });
+            if (uid) logActivity(uid, { module: "Upload Grades", action: "Grades Unposted", affectedItem: `${ids.length} student(s) in ${classInfo?.courseCode ?? classId}`, result: "Success" }).catch(() => {});
+          } catch {
+            toast.current?.show({ severity: "error", summary: "Error", detail: "Could not unpost grades. Please try again.", life: 3000 });
+          }
+        },
+      });
     }
   };
 
@@ -1124,6 +1526,11 @@ export default function InstructorUploadGrades() {
     setUploading(true);
     let added = 0, updated = 0, skipped = 0, errors = 0;
 
+    const replaceCount = conflictRows.filter(r => (actions[r.idNumber] ?? "replace") !== "skip").length;
+    const totalOps = newRows.length + replaceCount;
+    let done = 0;
+    setProgressToast({ current: 0, total: totalOps, type: "upload" });
+
     for (const { idNumber, cleanRow } of newRows) {
       try {
         await setDoc(doc(db, "classes", classId, "students", idNumber), { ...cleanRow, instructorUid: uid }, { merge: true });
@@ -1133,6 +1540,8 @@ export default function InstructorUploadGrades() {
         errors++;
         console.error(`Upload: failed to save student ${idNumber}`, err);
       }
+      done++;
+      setProgressToast(p => p ? { ...p, current: done } : null);
     }
 
     for (const { idNumber, cleanRow } of conflictRows) {
@@ -1145,8 +1554,11 @@ export default function InstructorUploadGrades() {
         errors++;
         console.error(`Upload: failed to update student ${idNumber}`, err);
       }
+      done++;
+      setProgressToast(p => p ? { ...p, current: done } : null);
     }
 
+    setProgressToast(null);
     const total = added + updated;
     const parts: string[] = [];
     if (updated > 0) parts.push(`${updated} record(s) updated.`);
@@ -1623,10 +2035,20 @@ export default function InstructorUploadGrades() {
   const labPct = classInfo?.labPercent ?? 37;
   const termGradeKey =
     classInfo?.term === "Final" ? "finalGrade" :
-    classInfo?.term === "Summer" ? "summerGrade" : "midtermGrade";
+    classInfo?.term === "Midyear" ? "summerGrade" : "midtermGrade";
   const termGradeLabel =
     classInfo?.term === "Final" ? "Final Grade" :
-    classInfo?.term === "Summer" ? "Summer Term Grade" : "Midterm Grade";
+    classInfo?.term === "Midyear" ? "Midyear Grade" : "Midterm Grade";
+
+  // O(1) per-row duplicate check — built once per records change instead of O(n) per row
+  const duplicateIdSet = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of records) {
+      const id = String(r.idNumber);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return new Set([...counts.entries()].filter(([, n]) => n > 1).map(([id]) => id));
+  }, [records]);
 
   const filteredRecords = records
     .filter((r) => {
@@ -1683,6 +2105,11 @@ export default function InstructorUploadGrades() {
     r >= copiedSel.minR && r <= copiedSel.maxR &&
     c >= copiedSel.minC && c <= copiedSel.maxC;
 
+  const isCut = (r: number, c: number) =>
+    !!cutSel &&
+    r >= cutSel.minR && r <= cutSel.maxR &&
+    c >= cutSel.minC && c <= cutSel.maxC;
+
   // Sync live values into refs after every render so document handlers see fresh data
   useEffect(() => {
     cellSelRef.current = cellSel;
@@ -1692,10 +2119,41 @@ export default function InstructorUploadGrades() {
     termGradeKeyRef.current = termGradeKey;
     handleCellChangeRef.current = handleCellChange;
     undoStackRef.current = undoStack;
+    redoStackRef.current = redoStack;
+    cutSelRef.current = cutSel;
     classIdRef.current = classId;
     uidRef.current = uid;
     classInfoRef.current = classInfo;
   });
+
+  // Auto-save draft to IndexedDB whenever there are unsaved changes
+  useEffect(() => {
+    if (!classId || !isDirty || records.length === 0) return;
+    const timer = setTimeout(() => {
+      saveDraft({
+        classId,
+        records,
+        dirtyIds: Array.from(dirtyIdsRef.current),
+        savedAt: Date.now(),
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [classId, isDirty, records]);
+
+  // Clear draft from IndexedDB after a successful save to Firestore
+  // (handleSave already calls clearDraft — this clears any stale draft on clean mount)
+  useEffect(() => {
+    if (!classId || isDirty) return;
+    clearDraft(classId);
+  }, [classId, isDirty]);
+
+  // Auto-trigger save when the connection comes back online and there are dirty changes
+  useEffect(() => {
+    if (isOnline && isDirty && !isSaving) {
+      handleSave(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline]);
 
   const CB_WIDTH = 36;
   const MG_WIDTH = 80;
@@ -1739,12 +2197,41 @@ export default function InstructorUploadGrades() {
   const rowEven    = isDark ? "#1e293b" : "#ffffff";
   const rowOdd     = isDark ? "#0f172a" : "#f9fafb";
   const rowSel     = isDark ? "#1e3a5f" : "#eff6ff";
+  const rowPosted  = isDark ? "#052e16" : "#f0fdf4";
   const gradeBg    = isDark ? "#1c1400" : "#fefce8";
   const gradeSelBg = isDark ? "#2d2200" : "#fef9c3";
 
   return (
     <div className="p-3 sm:p-6">
       <Toast ref={toast} position="top-right" />
+
+      {/* Progress toast — shown during upload/delete, replaces PrimeReact toast for live updates */}
+      {progressToast && (
+        <div className="fixed top-5 right-5 z-[9999] bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden w-80 pointer-events-none">
+          <div className={`h-1 w-full ${progressToast.type === "upload" ? "bg-blue-500" : "bg-red-500"}`} />
+          <div className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <i className={`pi ${progressToast.type === "upload" ? "pi-upload text-blue-500" : "pi-trash text-red-500"} text-sm`} />
+              <span className="font-semibold text-gray-800 dark:text-white text-sm flex-1">
+                {progressToast.type === "upload" ? "Uploading grades…" : "Deleting students…"}
+              </span>
+              <span className="text-xs text-gray-400 font-mono tabular-nums">
+                {progressToast.current}/{progressToast.total}
+              </span>
+            </div>
+            <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div
+                className={`h-2 rounded-full transition-all duration-150 ${progressToast.type === "upload" ? "bg-blue-500" : "bg-red-500"}`}
+                style={{ width: `${progressToast.total > 0 ? Math.round((progressToast.current / progressToast.total) * 100) : 0}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 text-right tabular-nums">
+              {progressToast.total > 0 ? Math.round((progressToast.current / progressToast.total) * 100) : 0}% complete
+            </p>
+          </div>
+        </div>
+      )}
+
       <ConfirmDialog />
 
       {/* Breadcrumb + Back */}
@@ -1804,21 +2291,76 @@ export default function InstructorUploadGrades() {
                   <i className="pi pi-th-large text-[10px]"></i> Lecture {lecPct}% + Lab {labPct}%
                 </span>
               )}
+
+              {/* Hints */}
+              <div className="relative" ref={hintsRef}>
+                <button onClick={() => { setShowHints((p) => !p); setShowInfo(false); }} className="text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition" title="Keyboard shortcuts & tips">
+                  <i className="pi pi-question-circle text-base"></i>
+                </button>
+                {showHints && (
+                  <div className="absolute left-0 top-7 z-50 w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-4 text-sm text-gray-700 dark:text-gray-200">
+                    <p className="font-semibold mb-3 flex items-center gap-2 text-gray-800 dark:text-white">
+                      <i className="pi pi-question-circle text-blue-500"></i> Tips & Shortcuts
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                      <span className="font-medium text-gray-700 dark:text-gray-200">
+                        {type === "Lecture" ? "Lecture-only" : type === "Laboratory" ? "Lab-only" : "Lecture + Lab"}
+                      </span>{" "}class. Double-click column headers to rename. Hover a sub-group or column to add/remove it.
+                    </p>
+                    <div className="space-y-1.5">
+                      {[
+                        ["Ctrl+S", "Save"],
+                        ["Ctrl+Z", "Undo"],
+                        ["Ctrl+Y", "Redo"],
+                        ["Ctrl+X", "Cut cell"],
+                        ["Ctrl+C", "Copy cell"],
+                        ["Ctrl+V", "Paste cell"],
+                        ["Tab", "Next cell"],
+                        ["↑ / ↓", "Navigate rows"],
+                      ].map(([key, desc]) => (
+                        <div key={key} className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{desc}</span>
+                          <kbd className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded text-[10px] font-mono border border-gray-200 dark:border-gray-600 shrink-0">{key}</kbd>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Unsaved indicator */}
-          {isDirty && !isSaving && (
-            <span className="text-xs text-amber-500 flex items-center gap-1 font-medium">
-              <i className="pi pi-circle-fill text-[8px]"></i> Unsaved changes
-            </span>
-          )}
-          {isSaving && (
-            <span className="text-xs text-gray-400 flex items-center gap-1">
-              <i className="pi pi-spin pi-spinner text-xs"></i> Saving…
-            </span>
-          )}
+          {/* Connection + save status */}
+          <ConnectionStatus status={connStatus} isDirty={isDirty} isSaving={isSaving} />
+
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => {
+                const stack = undoStack;
+                if (stack.length === 0) return;
+                // Trigger the same undo logic as Ctrl+Z via a synthetic dispatch
+                document.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+              }}
+              disabled={undoStack.length === 0}
+              title="Undo (Ctrl+Z)"
+              className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition"
+            >
+              <i className="pi pi-undo text-sm text-gray-600 dark:text-gray-300"></i>
+            </button>
+            <button
+              onClick={() => {
+                document.dispatchEvent(new KeyboardEvent("keydown", { key: "y", ctrlKey: true, bubbles: true }));
+              }}
+              disabled={redoStack.length === 0}
+              title="Redo (Ctrl+Y)"
+              className="w-8 h-8 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition"
+            >
+              <i className="pi pi-refresh text-sm text-gray-600 dark:text-gray-300"></i>
+            </button>
+          </div>
+
           {/* Save button */}
           <button
             onClick={() => handleSave()}
@@ -1826,24 +2368,47 @@ export default function InstructorUploadGrades() {
             title="Save (Ctrl+S)"
             className={`flex items-center gap-2 px-4 py-2 rounded font-semibold text-sm transition ${
               isDirty && !isSaving
-                ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+                ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm animate-pulse-once"
                 : "bg-gray-200 text-gray-400 cursor-not-allowed dark:bg-gray-700 dark:text-gray-500"
             }`}
           >
             <i className="pi pi-save text-xs"></i>
             Save
           </button>
-          <button
-            onClick={handleTogglePostGrades}
-            className={`flex items-center gap-2 px-4 py-2 rounded font-semibold text-sm transition ${
-              classInfo?.gradesPosted
-                ? "bg-yellow-500 hover:bg-yellow-600 text-white"
-                : "bg-green-600 hover:bg-green-700 text-white"
-            }`}
-          >
-            <i className={`pi text-xs ${classInfo?.gradesPosted ? "pi-eye-slash" : "pi-send"}`}></i>
-            {classInfo?.gradesPosted ? "Unpost Grades" : "Post Grades"}
-          </button>
+
+          {/* Post Grade / Unpost Grade button */}
+          {(() => {
+            const hasUnpostedSelected = selectedIds.size > 0 && [...selectedIds].some(
+              id => records.find(r => r.idNumber === id)?.posted !== true
+            );
+            const anyPosted = records.some(r => r.posted === true);
+            const isPostMode = hasUnpostedSelected;
+            const isEnabled = hasUnpostedSelected || anyPosted;
+            return (
+              <div className="relative group">
+                <button
+                  onClick={handlePostOrUnpost}
+                  disabled={!isEnabled}
+                  className={`flex items-center gap-2 px-4 py-2 rounded font-semibold text-sm transition ${
+                    !isEnabled
+                      ? "bg-gray-200 text-gray-400 cursor-not-allowed dark:bg-gray-700 dark:text-gray-500"
+                      : isPostMode
+                        ? "bg-green-600 hover:bg-green-700 text-white"
+                        : "bg-yellow-500 hover:bg-yellow-600 text-white"
+                  }`}
+                >
+                  <i className={`pi text-xs ${isPostMode ? "pi-send" : "pi-eye-slash"}`}></i>
+                  {isPostMode ? "Post Grade" : "Unpost Grade"}
+                </button>
+                {!isEnabled && (
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                    Select students to post grades
+                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800" />
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -1942,14 +2507,6 @@ export default function InstructorUploadGrades() {
         </div>
       </div>
 
-      <p className="text-xs text-gray-400 mb-2">
-        <i className="pi pi-info-circle text-blue-400 mr-1"></i>
-        {type === "Lecture"
-          ? "Lecture-only class. Double-click any header to rename. Hover a sub-group to add/remove sub-groups (+/×). Hover a column to add/remove columns (+/×)."
-          : type === "Laboratory"
-          ? "Laboratory-only class. Double-click any header to rename. Hover a sub-group to add/remove sub-groups (+/×). Hover a column to add/remove columns (+/×)."
-          : "Double-click any header to rename. Hover a sub-group to add/remove sub-groups (+/×). Hover a column to add/remove columns (+/×)."}
-      </p>
 
       {/* ── TABLE ── */}
       <div ref={tableWrapperRef} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg" style={{ overflowX: "auto", overflowY: "auto", maxHeight: "72vh" }}>
@@ -1972,14 +2529,14 @@ export default function InstructorUploadGrades() {
                   title="Select all on this page"
                 />
               </th>
-              <th rowSpan={3} className={`${thBase} bg-yellow-50 dark:bg-gray-700 border-r border-gray-400 dark:border-gray-600 px-2 py-1 relative`}
+              <th rowSpan={3} className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 border-r border-gray-400 dark:border-gray-600 px-2 py-1 relative`}
                 style={{ minWidth: wId, width: wId, position: "sticky", left: CB_WIDTH, zIndex: 41 }}>
                 ID Number
                 <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", zIndex: 50 }}
                   onMouseDown={(e) => startColResize("_col_id", 90, e)} />
               </th>
               <th rowSpan={3}
-                className={`${thBase} bg-yellow-50 dark:bg-gray-700 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
+                className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
                 style={{ minWidth: wLast, width: wLast, position: "sticky", left: CB_WIDTH + wId, zIndex: 41 }}
                 onClick={() => handleSortToggle("lastName")}
                 title="Sort by Last Name"
@@ -1992,7 +2549,7 @@ export default function InstructorUploadGrades() {
                   onMouseDown={(e) => { e.stopPropagation(); startColResize("_col_last", 110, e); }} />
               </th>
               <th rowSpan={3}
-                className={`${thBase} bg-yellow-50 dark:bg-gray-700 border-r-2 border-gray-400 dark:border-gray-600 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
+                className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 border-r-2 border-gray-400 dark:border-gray-600 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
                 style={{ minWidth: wFirst, width: wFirst, position: "sticky", left: CB_WIDTH + wId + wLast, zIndex: 41 }}
                 onClick={() => handleSortToggle("firstName")}
                 title="Sort by First Name"
@@ -2038,7 +2595,7 @@ export default function InstructorUploadGrades() {
                     {isEditing ? (
                       <input
                         autoFocus
-                        className="w-full border border-blue-400 rounded text-xs px-1 py-0.5 text-center bg-white"
+                        className="w-full border border-blue-400 rounded text-xs px-1 py-0.5 text-center bg-white dark:bg-gray-700 dark:text-gray-100"
                         value={editingSubGroupLabel}
                         onChange={(e) => setEditingSubGroupLabel(e.target.value)}
                         onBlur={() => commitSubGroup(subGroup, "lecture")}
@@ -2083,7 +2640,7 @@ export default function InstructorUploadGrades() {
                     {isEditing ? (
                       <input
                         autoFocus
-                        className="w-full border border-blue-400 rounded text-xs px-1 py-0.5 text-center bg-white"
+                        className="w-full border border-blue-400 rounded text-xs px-1 py-0.5 text-center bg-white dark:bg-gray-700 dark:text-gray-100"
                         value={editingSubGroupLabel}
                         onChange={(e) => setEditingSubGroupLabel(e.target.value)}
                         onBlur={() => commitSubGroup(subGroup, "laboratory")}
@@ -2124,7 +2681,7 @@ export default function InstructorUploadGrades() {
                 const cw = getW(col.key, 46);
                 return (
                   <th key={col.key}
-                    className={`${thBase} ${col.group === "lecture" ? "bg-yellow-50 dark:bg-gray-800" : "bg-green-50 dark:bg-gray-800"} align-bottom relative group cursor-pointer`}
+                    className={`${thBase} ${col.group === "lecture" ? "bg-yellow-50 dark:bg-gray-800" : "bg-green-50 dark:bg-gray-800"} dark:text-gray-200 align-bottom relative group cursor-pointer`}
                     style={{ minWidth: cw, width: cw, height: 120, verticalAlign: "bottom", padding: 0 }}
                     onDoubleClick={() => startEditColLabel(col)}
                     title="Double-click to rename"
@@ -2133,7 +2690,7 @@ export default function InstructorUploadGrades() {
                       <div className="p-1">
                         <input
                           autoFocus
-                          className="w-full border border-blue-400 rounded text-[10px] px-1 py-0.5 text-center bg-white"
+                          className="w-full border border-blue-400 rounded text-[10px] px-1 py-0.5 text-center bg-white dark:bg-gray-700 dark:text-gray-100"
                           placeholder="Label"
                           value={editingColLabel}
                           onChange={(e) => setEditingColLabel(e.target.value)}
@@ -2195,17 +2752,21 @@ export default function InstructorUploadGrades() {
               </tr>
             ) : (
               paginatedRecords.map((student, index) => {
-                const rowBg = index % 2 === 0 ? rowEven : rowOdd;
+                const isDuplicateId = duplicateIdSet.has(String(student.idNumber));
+                const rowBg = student.posted ? rowPosted : (index % 2 === 0 ? rowEven : rowOdd);
                 const isSelected = selectedIds.has(student.idNumber);
                 return (
-                  <tr key={index}
+                  <tr key={String(student._key ?? student.idNumber)}
                     style={{ backgroundColor: isSelected ? rowSel : rowBg }}
                     className="hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
 
                     {/* Checkbox */}
                     <td className={`${tdBase}`}
                       style={{ minWidth: CB_WIDTH, width: CB_WIDTH, position: "sticky", left: 0, zIndex: 10, backgroundColor: isSelected ? rowSel : rowBg }}>
-                      <div className="flex items-center justify-center">
+                      <div className="flex items-center justify-center gap-1">
+                        {student.posted && (
+                          <span title="Grade posted" className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block shrink-0" />
+                        )}
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -2222,7 +2783,11 @@ export default function InstructorUploadGrades() {
                       onMouseEnter={() => { if (isDraggingRef.current) setCellSel(prev => prev ? { ...prev, end: { r: index, c: 0 } } : null); }}
                     >
                       <input
-                        className="w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-1 focus:ring-blue-300 focus:rounded text-center dark:text-gray-100"
+                        className={`w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:ring-1 focus:rounded text-center transition-colors ${
+                          isDuplicateId
+                            ? "text-red-600 dark:text-red-400 focus:bg-red-50 dark:focus:bg-red-900/20 focus:ring-red-400"
+                            : "dark:text-gray-100 focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-blue-300"
+                        }`}
                         value={student.idNumber}
                         onFocus={() => handleCellFocus(student.idNumber, "idNumber", student.idNumber)}
                         onBlur={() => handleCellBlur(student.idNumber, "idNumber", student.idNumber)}
@@ -2230,6 +2795,7 @@ export default function InstructorUploadGrades() {
                       />
                       {isInCellSel(index, 0) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
                       {isCopied(index, 0)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                      {isCut(index, 0)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                     </td>
 
                     {/* Last Name */}
@@ -2240,13 +2806,14 @@ export default function InstructorUploadGrades() {
                     >
                       <input
                         className="w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-1 focus:ring-blue-300 focus:rounded dark:text-gray-100"
-                        value={student.lastName ?? ""}
+                        value={toTitleCase(String(student.lastName ?? ""))}
                         onFocus={() => handleCellFocus(student.idNumber, "lastName", student.lastName)}
                         onBlur={() => handleCellBlur(student.idNumber, "lastName", student.lastName)}
-                        onChange={(e) => handleCellChange(student.idNumber, "lastName", e.target.value)}
+                        onChange={(e) => handleCellChange(student.idNumber, "lastName", toTitleCase(e.target.value))}
                       />
                       {isInCellSel(index, 1) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
                       {isCopied(index, 1)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                      {isCut(index, 1)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                     </td>
 
                     {/* First Name */}
@@ -2257,13 +2824,14 @@ export default function InstructorUploadGrades() {
                     >
                       <input
                         className="w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-1 focus:ring-blue-300 focus:rounded dark:text-gray-100"
-                        value={student.firstName ?? ""}
+                        value={toTitleCase(String(student.firstName ?? ""))}
                         onFocus={() => handleCellFocus(student.idNumber, "firstName", student.firstName)}
                         onBlur={() => handleCellBlur(student.idNumber, "firstName", student.firstName)}
-                        onChange={(e) => handleCellChange(student.idNumber, "firstName", e.target.value)}
+                        onChange={(e) => handleCellChange(student.idNumber, "firstName", toTitleCase(e.target.value))}
                       />
                       {isInCellSel(index, 2) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
                       {isCopied(index, 2)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                      {isCut(index, 2)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                     </td>
 
                     {/* Data columns */}
@@ -2278,8 +2846,8 @@ export default function InstructorUploadGrades() {
                         >
                           <input
                             type="number"
-                            title={!isValidScore(student[col.key]) ? "Score must be 0–100" : undefined}
-                            className={`w-full px-0.5 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center dark:text-gray-100 [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidScore(student[col.key]) ? "ring-2 ring-red-400 rounded bg-red-50/60 dark:bg-red-900/30 focus:ring-red-400" : "focus:ring-1 focus:ring-blue-300"}`}
+                            title={!isValidScore(student[col.key] as string | number | undefined) ? "Score must be 0–100" : undefined}
+                            className={`w-full px-0.5 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center dark:text-gray-100 [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidScore(student[col.key] as string | number | undefined) ? "ring-2 ring-red-400 rounded bg-red-50/60 dark:bg-red-900/30 focus:ring-red-400" : "focus:ring-1 focus:ring-blue-300"}`}
                             style={{ minWidth: 40 }}
                             value={(() => { const v = student[col.key]; return v !== "" && v != null && !isNaN(Number(v)) ? Number(v) : ""; })()}
                             onFocus={() => handleCellFocus(student.idNumber, col.key, student[col.key] as string | number | undefined)}
@@ -2288,6 +2856,7 @@ export default function InstructorUploadGrades() {
                           />
                           {isInCellSel(index, colIdx) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
                           {isCopied(index, colIdx)    && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                          {isCut(index, colIdx)       && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                         </td>
                       );
                     })}
@@ -2301,8 +2870,8 @@ export default function InstructorUploadGrades() {
                     >
                       <input
                         type="number"
-                        title={!isValidGrade(student[termGradeKey]) ? "Grade must be 1.0–5.0 (leave blank for missing)" : undefined}
-                        className={`w-full px-0.5 py-0.5 text-xs font-bold bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidGrade(student[termGradeKey]) ? "ring-2 ring-red-500 rounded bg-red-50/60 dark:bg-red-900/30 text-red-600 focus:ring-red-500" : "text-blue-700 dark:text-blue-300 focus:ring-1 focus:ring-blue-300"}`}
+                        title={!isValidGrade(student[termGradeKey] as string | number | undefined) ? "Grade must be 1.0–5.0 (leave blank for missing)" : undefined}
+                        className={`w-full px-0.5 py-0.5 text-xs font-bold bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidGrade(student[termGradeKey] as string | number | undefined) ? "ring-2 ring-red-500 rounded bg-red-50/60 dark:bg-red-900/30 text-red-600 focus:ring-red-500" : "text-blue-700 dark:text-blue-300 focus:ring-1 focus:ring-blue-300"}`}
                         value={(() => { const v = student[termGradeKey]; return v !== "" && v != null && !isNaN(Number(v)) ? Number(v) : ""; })()}
                         onFocus={() => handleCellFocus(student.idNumber, termGradeKey, student[termGradeKey] as string | number | undefined)}
                         onBlur={(e) => handleCellBlur(student.idNumber, termGradeKey, e.target.value === "" ? "" : Number(e.target.value))}
@@ -2310,6 +2879,7 @@ export default function InstructorUploadGrades() {
                       />
                       {isInCellSel(index, gradeColIdx) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
                       {isCopied(index, gradeColIdx)    && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                      {isCut(index, gradeColIdx)       && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                     </td>
                     ); })()}
                   </tr>
@@ -2555,7 +3125,7 @@ export default function InstructorUploadGrades() {
                   if (key === "firstName") return "First Name";
                   if (key === "midtermGrade") return "Midterm Grade";
                   if (key === "finalGrade") return "Final Grade";
-                  if (key === "summerGrade") return "Summer Grade";
+                  if (key === "summerGrade") return "Midyear Grade";
                   const col = [...lectureCols, ...laboratoryCols].find(c => c.key === key);
                   return col?.label ?? key;
                 };

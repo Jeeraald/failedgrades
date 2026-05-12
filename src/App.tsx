@@ -9,6 +9,7 @@ import InstructorDashboard from "./pages/InstructorDashboard";
 import InstructorClassRecord from "./pages/InstructorClassRecord";
 import InstructorUploadGrades from "./pages/InstructorUploadGrades";
 import InstructorSettings from "./pages/InstructorSettings";
+import InstructorSetup from "./pages/InstructorSetup";
 import ProtectedRoute from "./components/ProtectedRoute";
 import InstructorLayout from "./layouts/InstructorLayout";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -24,6 +25,9 @@ function App() {
       <Route path="/instructor-login" element={<InstructorLogin />} />
 
       <Route path="/forgot-password" element={<ForgotPassword />} />
+
+      {/* First-time setup — outside the layout, has its own auth guard */}
+      <Route path="/instructor/setup" element={<InstructorSetup />} />
 
       {/* Protected Instructor Layout */}
       <Route

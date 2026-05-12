@@ -6,7 +6,18 @@
       "Bash(npm install *)",
       "Bash(npx eslint *)",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(Object.keys\\(p.dependencies\\),null,2\\)\\)\")",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "mcp__ide__getDiagnostics",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Jerald Meñoza\\\\Desktop\\\\Projects\\\\mygrade-system\\\\src\" -Recurse -Include \"*.tsx\", \"*.ts\", \"*.jsx\", \"*.js\")",
+      "Bash(Select-Object FullName)",
+      "Bash(node -e \"const pkg = require\\('./node_modules/firebase/package.json'\\); console.log\\('firebase:', pkg.version\\)\")",
+      "Bash(ls *.rules)",
+      "Bash(ls .env*)",
+      "Bash(ls firebase.json)",
+      "Bash(grep -v \"//.*console\\\\.\")",
+      "Bash(cat .gitignore)",
+      "Bash(cat vite.config.ts)",
+      "Bash(node -e ' *)"
     ]
   }
 }

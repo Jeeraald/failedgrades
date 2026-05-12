@@ -41,6 +41,11 @@ export default function ForgotPassword() {
     } else {
       if (window.grecaptcha) setCaptchaReady(true);
     }
+
+    return () => {
+      // Prevent the callback firing on a stale/unmounted component
+      window.onRecaptchaLoad = () => {};
+    };
   }, []);
 
   useEffect(() => {

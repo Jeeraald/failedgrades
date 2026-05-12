@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
+import bgImage from "../assets/background.jpg";
 import { useSessionTimeout } from "../utils/useSessionTimeout";
 import SessionTimeoutModal from "../components/SessionTimeoutModal";
 import {
@@ -28,81 +29,82 @@ interface SubjectCardProps {
 function SubjectCard({ cls, isViewed, onView }: SubjectCardProps) {
   const posted = cls.gradesPosted;
   const postedLabel = formatPostedAt(cls.gradesPostedAt);
+  const grade = posted && isViewed ? toNum(cls[termGradeKey(cls.term)]) : null;
+  const isPassed = grade !== null && grade < 3.25;
 
   return (
     <div
-      className={`bg-white rounded-2xl shadow-sm border flex flex-col overflow-hidden transition-shadow hover:shadow-md ${
+      className={`bg-white rounded-xl shadow-sm border flex overflow-hidden transition-shadow hover:shadow-md ${
         posted ? "border-gray-200" : "border-gray-100"
       }`}
     >
-      {/* Accent stripe */}
-      <div className={`h-1.5 w-full shrink-0 ${termAccentClass(cls.term)}`} />
+      {/* Left accent stripe */}
+      <div className={`w-1.5 shrink-0 ${termAccentClass(cls.term)}`} />
 
-      <div className="p-4 flex flex-col gap-3 flex-1">
-        {/* Badges */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${termBadgeClass(cls.term)}`}>
-            {termLabel(cls.term)}
-          </span>
-          {posted ? (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-600 font-medium flex items-center gap-1">
-              <i className="pi pi-check-circle text-[10px]"></i> Posted
-            </span>
-          ) : (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-600 font-medium flex items-center gap-1">
-              <i className="pi pi-clock text-[10px]"></i> Pending
-            </span>
-          )}
-        </div>
+      {/* Main content */}
+      <div className="flex-1 min-w-0 px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4">
 
-        {/* Course info */}
+        {/* Subject info */}
         <div className="flex-1 min-w-0">
-          <h3 className="font-bold text-gray-800 text-lg leading-tight truncate">
-            {cls.courseCode}
-          </h3>
-          <p className="text-sm text-gray-500 mt-0.5 line-clamp-2 leading-snug">
-            {cls.subjectName}
-          </p>
-          <p className="text-xs text-gray-400 mt-1">{cls.yearSection}</p>
+          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+            <h3 className="font-bold text-gray-800 text-base leading-tight">{cls.courseCode}</h3>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${termBadgeClass(cls.term)}`}>
+              {termLabel(cls.term)}
+            </span>
+            {posted ? (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-600 font-medium flex items-center gap-1">
+                <i className="pi pi-check-circle text-[10px]"></i> Posted
+              </span>
+            ) : (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-600 font-medium flex items-center gap-1">
+                <i className="pi pi-clock text-[10px]"></i> Pending
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-gray-500 truncate leading-snug">{cls.subjectName}</p>
+          <p className="text-xs text-gray-400 mt-0.5">{cls.yearSection}</p>
 
-          {/* Below year/section: timestamp before first view, grade after */}
+          {/* Posted timestamp (before first view) */}
           {posted && !isViewed && postedLabel && (
             <div className="flex items-center gap-1 mt-1 text-xs text-gray-400">
               <i className="pi pi-calendar text-[10px] shrink-0"></i>
               <span>{postedLabel}</span>
             </div>
           )}
-          {posted && isViewed && (() => {
-            const grade = toNum(cls[termGradeKey(cls.term)]);
-            if (grade === null) return null;
-            const isPassed = grade < 3.25;
-            return (
-              <p className={`text-xs font-bold mt-1 ${isPassed ? "text-green-600" : "text-red-500"}`}>
-                {termLabel(cls.term)} Grade: {grade.toFixed(2)}
-              </p>
-            );
-          })()}
+          {/* Unposted notice */}
+          {!posted && (
+            <p className="text-xs text-orange-500 italic mt-0.5">
+              Grades not yet posted by instructor
+            </p>
+          )}
         </div>
 
-        {/* Not-posted notice (shown whenever grades are unposted) */}
-        {!posted && (
-          <p className="text-xs text-orange-500 italic">
-            Grades not yet posted by instructor
-          </p>
-        )}
+        {/* Right: grade badge + button */}
+        <div className="shrink-0 flex items-center gap-3">
+          {/* Grade badge (shown after first view) */}
+          {grade !== null && (
+            <div className={`text-center px-3 py-1.5 rounded-xl ${isPassed ? "bg-green-50" : "bg-red-50"}`}>
+              <p className={`text-lg font-black leading-none ${isPassed ? "text-green-600" : "text-red-500"}`}>
+                {grade.toFixed(2)}
+              </p>
+              <p className={`text-[10px] font-semibold mt-0.5 ${isPassed ? "text-green-500" : "text-red-400"}`}>
+                {isPassed ? "Passed" : "Failed"}
+              </p>
+            </div>
+          )}
 
-        {/* Action button — disabled when unposted, regardless of viewed state */}
-        <button
-          disabled={!posted}
-          onClick={onView}
-          className={`w-full py-2.5 rounded-xl font-semibold text-sm transition mt-auto ${
-            posted
-              ? "bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
-              : "bg-gray-100 text-gray-400 cursor-not-allowed"
-          }`}
-        >
-          {!posted ? "Grades Not Posted" : isViewed ? "View Class Record" : "View Grades"}
-        </button>
+          <button
+            disabled={!posted}
+            onClick={onView}
+            className={`px-4 py-2 rounded-xl font-semibold text-sm transition whitespace-nowrap ${
+              posted
+                ? "bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
+                : "bg-gray-100 text-gray-400 cursor-not-allowed"
+            }`}
+          >
+            {!posted ? "Not Posted" : isViewed ? "View Record" : "View Grades"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -116,59 +118,117 @@ export default function StudentSubjectList() {
   const [session] = useState<EnrolledSession | null>(() => loadEnrolled());
   const [viewedSet, setViewedSet] = useState<Set<string>>(() => loadViewedClasses());
 
-  // Live classes list — starts from sessionStorage, refreshed from Firestore
-  const [classes, setClasses] = useState<EnrolledClass[]>(
-    () => loadEnrolled()?.classes ?? []
+  // Classes list — always populated from server-confirmed Firestore snapshots only,
+  // never from stale sessionStorage, so disabled/changed classes are never shown.
+  const [classes, setClasses] = useState<EnrolledClass[]>([]);
+  // True only when there are actually classes to load — avoids synchronous setState in effect
+  const [subjectsLoading, setSubjectsLoading] = useState(
+    () => !!(loadEnrolled()?.classes.length)
   );
 
-  // On every mount re-fetch gradesPosted/gradesPostedAt so stale sessionStorage
-  // can never keep a button enabled after an instructor unpost
+  // Real-time sync — all listeners start immediately (no async setup window).
+  // Only processes server-confirmed snapshots (fromCache=false) so stale cached
+  // or pre-change data never briefly appears.
   useEffect(() => {
-    if (!session?.classes.length) return;
-    let cancelled = false;
+    if (!session?.classes.length) return; // subjectsLoading initialised to false when no classes
 
-    Promise.all(
-      session.classes.map(async (cls) => {
-        try {
-          const snap = await getDoc(doc(db, "classes", cls.classId));
-          if (!snap.exists()) return { ...cls, gradesPosted: false, gradesPostedAt: null };
-          const d = snap.data();
-          const postedAt = d.gradesPostedAt;
-          const isoPostedAt = postedAt && typeof postedAt === "object" && "seconds" in postedAt
-            ? new Date((postedAt as { seconds: number }).seconds * 1000).toISOString()
-            : null;
-          return { ...cls, gradesPosted: d.gradesPosted === true, gradesPostedAt: isoPostedAt };
-        } catch {
-          return cls; // keep stale value on network error
+    // Mutable maps accumulate per-class state; no closure-stale issues since
+    // setClasses/setViewedSet always use functional-updater form.
+    const classStateMap = new Map<string, {
+      enabled: boolean; classPosted: boolean; isoPostedAt: string | null;
+    }>();
+    const studentPostedMap = new Map<string, boolean | undefined>();
+    const serverConfirmed = new Set<string>(); // class docs confirmed by server
+    let mounted = true;
+    const unsubscribers: (() => void)[] = [];
+
+    // Fallback: unblock loading after 5 s in case device is offline
+    const fallback = setTimeout(() => { if (mounted) setSubjectsLoading(false); }, 5000);
+
+    const recompute = () => {
+      if (!mounted) return;
+      const visible: EnrolledClass[] = [];
+      for (const cls of session.classes) {
+        const state = classStateMap.get(cls.classId);
+        if (!state?.enabled) continue;
+        const studentPostedRaw = studentPostedMap.get(cls.classId);
+        const studentPosted = studentPostedRaw === undefined ? state.classPosted : studentPostedRaw;
+        const gradesPosted = state.classPosted && studentPosted;
+        // Clear the timestamp when grades are not posted so the UI shows no conflicting date
+        visible.push({ ...cls, gradesPosted, gradesPostedAt: gradesPosted ? state.isoPostedAt : null });
+      }
+      setClasses(visible);
+      sessionStorage.setItem("enrolledSubjects", JSON.stringify({ ...session, classes: visible }));
+    };
+
+    for (const cls of session.classes) {
+      // Class doc — skip cache fires; only trust server-confirmed data
+      const classUnsub = onSnapshot(
+        doc(db, "classes", cls.classId),
+        { includeMetadataChanges: true },
+        (snap) => {
+          if (!mounted || snap.metadata.fromCache) return;
+
+          serverConfirmed.add(cls.classId);
+
+          if (!snap.exists() || snap.data().enabled === false) {
+            classStateMap.delete(cls.classId);
+            setViewedSet(prev => {
+              if (!prev.has(cls.classId)) return prev;
+              const next = new Set(prev);
+              next.delete(cls.classId);
+              sessionStorage.setItem("viewedClasses", JSON.stringify([...next]));
+              return next;
+            });
+          } else {
+            const d = snap.data();
+            const classPosted = d.gradesPosted === true;
+            const postedAt = d.gradesPostedAt;
+            const isoPostedAt =
+              postedAt && typeof postedAt === "object" && "seconds" in postedAt
+                ? new Date((postedAt as { seconds: number }).seconds * 1000).toISOString()
+                : null;
+            classStateMap.set(cls.classId, { enabled: true, classPosted, isoPostedAt });
+            if (!classPosted) {
+              setViewedSet(prev => {
+                if (!prev.has(cls.classId)) return prev;
+                const next = new Set(prev);
+                next.delete(cls.classId);
+                sessionStorage.setItem("viewedClasses", JSON.stringify([...next]));
+                return next;
+              });
+            }
+          }
+
+          recompute();
+          if (serverConfirmed.size >= session.classes.length) {
+            clearTimeout(fallback);
+            setSubjectsLoading(false);
+          }
         }
-      })
-    ).then((updated) => {
-      if (cancelled) return;
-      setClasses(updated as EnrolledClass[]);
-
-      // Reset viewed state for any class whose grades are now unposted
-      const unpostedIds = new Set(
-        (updated as EnrolledClass[]).filter(c => !c.gradesPosted).map(c => c.classId)
       );
-      if (unpostedIds.size > 0) {
-        setViewedSet(prev => {
-          const next = new Set(prev);
-          unpostedIds.forEach(id => next.delete(id));
-          sessionStorage.setItem("viewedClasses", JSON.stringify([...next]));
-          return next;
-        });
-      }
 
-      // Persist fresh values so back-navigation stays consistent
-      if (session) {
-        sessionStorage.setItem(
-          "enrolledSubjects",
-          JSON.stringify({ ...session, classes: updated })
-        );
-      }
-    });
+      // Student doc — per-student posted flag (also skip cache)
+      const studentUnsub = onSnapshot(
+        doc(db, "classes", cls.classId, "students", session.idNumber),
+        { includeMetadataChanges: true },
+        (studentSnap) => {
+          if (!mounted || studentSnap.metadata.fromCache) return;
+          const studentDoc = studentSnap.exists() ? studentSnap.data() : null;
+          const posted = studentDoc?.posted === undefined ? undefined : studentDoc.posted === true;
+          studentPostedMap.set(cls.classId, posted);
+          recompute();
+        }
+      );
 
-    return () => { cancelled = true; };
+      unsubscribers.push(classUnsub, studentUnsub);
+    }
+
+    return () => {
+      mounted = false;
+      clearTimeout(fallback);
+      unsubscribers.forEach(u => u());
+    };
   }, [session]);
 
   const { showModal: showTimeout, countdown, extendSession, logoutNow } = useSessionTimeout({
@@ -204,24 +264,27 @@ export default function StudentSubjectList() {
 
   return (
     <>
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-200 p-4 sm:p-6 md:p-8">
-      <div className="max-w-5xl mx-auto">
+    <div
+      className="min-h-screen p-4 sm:p-6 md:p-8 relative"
+      style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
+    >
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative z-10 max-w-5xl mx-auto">
 
         {/* Header */}
         <div className="text-center mb-6">
-          <h1 className="text-3xl font-bold text-blue-700 mb-1">My Subjects</h1>
-          <p className="text-gray-500 text-sm">
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-1">My Subjects</h1>
+          <p className="text-blue-100 text-sm">
             {fullName} &middot; {session.idNumber}
           </p>
         </div>
 
         {/* Actions bar */}
-        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-          <p className="text-sm text-gray-500 font-medium">
-            {classes.length} enrolled subject
-            {classes.length !== 1 ? "s" : ""}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-5 gap-3">
+          <p className="text-sm text-white/80 font-medium">
+            {subjectsLoading ? "Loading…" : `${classes.length} enrolled subject${classes.length !== 1 ? "s" : ""}`}
           </p>
-          {viewedCount > 0 && (
+          {!subjectsLoading && viewedCount > 0 && (
             <button
               onClick={() => navigate("/all-class-records")}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 shadow-sm transition"
@@ -235,14 +298,18 @@ export default function StudentSubjectList() {
           )}
         </div>
 
-        {/* Cards grid — 1 col mobile / 2 col tablet / 3 col desktop */}
-        {classes.length === 0 ? (
+        {/* Cards */}
+        {subjectsLoading ? (
+          <div className="flex justify-center py-12">
+            <i className="pi pi-spin pi-spinner text-white text-3xl"></i>
+          </div>
+        ) : classes.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 text-center shadow-sm border border-gray-100">
             <i className="pi pi-inbox text-5xl text-gray-200 mb-4 block"></i>
             <p className="text-gray-400 font-medium">No enrolled subjects found.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="flex flex-col gap-3">
             {classes.map((cls) => (
               <SubjectCard
                 key={cls.classId}
@@ -258,12 +325,12 @@ export default function StudentSubjectList() {
         <div className="mt-10 flex flex-col items-center gap-3">
           <button
             onClick={handleLogout}
-            className="w-full sm:w-64 bg-white text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 border border-gray-200 transition shadow-sm"
+            className="w-full sm:w-64 bg-white/90 text-gray-700 font-semibold py-3 rounded-xl hover:bg-white border border-white/20 transition shadow-sm"
           >
             Back to Login
           </button>
-          <p className="text-gray-400 text-xs">
-            Made by <span className="font-semibold text-blue-500">Sir Jerald</span>
+          <p className="text-white/50 text-xs">
+            Made by <span className="font-semibold text-blue-300">Sir Jerald</span>
           </p>
         </div>
       </div>

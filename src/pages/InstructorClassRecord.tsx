@@ -26,8 +26,9 @@ interface ClassItem {
   classType: "Lecture" | "Laboratory" | "Both";
   lecturePercent: number;
   labPercent: number;
-  term?: "Midterm" | "Final" | "Summer";
+  term?: "Midterm" | "Final" | "Midyear";
   gradesPosted?: boolean;
+  enabled?: boolean;
 }
 
 export default function InstructorClassRecord() {
@@ -43,7 +44,7 @@ export default function InstructorClassRecord() {
   const [lecturePercent, setLecturePercent] = useState<number>(100);
   const [labPercent, setLabPercent] = useState<number>(0);
   const [percentError, setPercentError] = useState("");
-  const [term, setTerm] = useState<"Midterm" | "Final" | "Summer">("Midterm");
+  const [term, setTerm] = useState<"Midterm" | "Final" | "Midyear">("Midterm");
 
   const [copyingId, setCopyingId] = useState<string | null>(null);
 
@@ -299,6 +300,55 @@ export default function InstructorClassRecord() {
     });
   };
 
+  const handleToggleEnabled = (cls: ClassItem) => {
+    const willEnable = cls.enabled === false;
+    confirmDialog({
+      message: willEnable
+        ? `Enable "${cls.courseCode} — ${cls.yearSection}"? Students will be able to view this class record again.`
+        : `Disable "${cls.courseCode} — ${cls.yearSection}"? Students will immediately lose access to this class record.`,
+      header: willEnable ? "Enable Class" : "Disable Class",
+      icon: willEnable ? "pi pi-check-circle" : "pi pi-ban",
+      acceptLabel: willEnable ? "Yes, Enable" : "Yes, Disable",
+      rejectLabel: "Cancel",
+      acceptClassName: "custom-yes",
+      rejectClassName: "custom-no",
+      accept: async () => {
+        // Optimistic update — reflect the new state instantly before server confirms
+        setClasses(prev => prev.map(c => (c.id === cls.id ? { ...c, enabled: willEnable } : c)));
+        try {
+          await updateDoc(doc(db, "classes", cls.id), {
+            enabled: willEnable,
+            updatedAt: new Date(),
+          });
+          toast.current?.show({
+            severity: "success",
+            summary: willEnable ? "Class Enabled" : "Class Disabled",
+            detail: willEnable
+              ? "Students can now view this class record."
+              : "Students can no longer access this class record.",
+            life: 3000,
+          });
+          if (uid) logActivity(uid, {
+            module: "Class Record",
+            action: willEnable ? "Class Enabled" : "Class Disabled",
+            affectedItem: `${cls.courseCode} — ${cls.yearSection}`,
+            result: "Success",
+          }).catch(() => {});
+        } catch (error) {
+          // Revert optimistic update on failure
+          setClasses(prev => prev.map(c => (c.id === cls.id ? { ...c, enabled: cls.enabled } : c)));
+          console.error(error);
+          toast.current?.show({
+            severity: "error",
+            summary: "Error",
+            detail: "Something went wrong. Please try again.",
+            life: 3000,
+          });
+        }
+      },
+    });
+  };
+
   const filteredClasses = classes
     .filter((cls) => {
       const q = search.toLowerCase();
@@ -315,19 +365,19 @@ export default function InstructorClassRecord() {
       <Toast ref={toast} position="top-right" />
       <ConfirmDialog />
 
-      <h1 className="text-3xl font-bold mb-6 text-blue-700 dark:text-blue-400">Class Records</h1>
+      <h1 className="text-2xl sm:text-3xl font-bold mb-6 text-blue-700 dark:text-blue-400">Class Records</h1>
 
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
           type="text"
           placeholder="Search class..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="border p-2 rounded w-full md:w-1/3 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
+          className="border p-2 rounded w-full sm:flex-1 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
         />
         <button
           onClick={openCreateModal}
-          className="ml-4 px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          className="w-full sm:w-auto px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shrink-0"
         >
           + Add Class
         </button>
@@ -340,7 +390,7 @@ export default function InstructorClassRecord() {
           filteredClasses.map((cls) => (
             <div
               key={cls.id}
-              className="border p-4 rounded hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700 transition flex justify-between items-center"
+              className="border p-4 rounded hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700 transition flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3"
             >
               <div
                 onClick={() => navigate(`/instructor/classrecord/${cls.id}`)}
@@ -362,22 +412,41 @@ export default function InstructorClassRecord() {
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                     cls.term === "Final"
                       ? "bg-orange-100 text-orange-600 dark:bg-orange-900/50 dark:text-orange-300"
-                      : cls.term === "Summer"
+                      : cls.term === "Midyear"
                       ? "bg-teal-100 text-teal-600 dark:bg-teal-900/50 dark:text-teal-300"
                       : "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/50 dark:text-indigo-300"
                   }`}>
-                    {cls.term === "Summer" ? "Summer Term" : cls.term || "Midterm"}
+                    {cls.term === "Midyear" ? "Midyear" : cls.term || "Midterm"}
                   </span>
                   {cls.gradesPosted && (
                     <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-300">
                       <i className="pi pi-send text-xs mr-1"></i>Posted
                     </span>
                   )}
+                  {cls.enabled === false && (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 dark:bg-red-900/50 dark:text-red-300">
+                      <i className="pi pi-ban text-xs mr-1"></i>Disabled
+                    </span>
+                  )}
                 </div>
                 <div className="text-sm text-gray-600 dark:text-gray-400">{cls.subjectName}</div>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <button
+                  onClick={() => handleToggleEnabled(cls)}
+                  className={`px-3 py-1 rounded text-white text-sm transition ${
+                    cls.enabled === false
+                      ? "bg-green-500 hover:bg-green-600"
+                      : "bg-gray-500 hover:bg-gray-600"
+                  }`}
+                >
+                  {cls.enabled === false ? (
+                    <><i className="pi pi-check-circle text-xs mr-1"></i>Enable</>
+                  ) : (
+                    <><i className="pi pi-ban text-xs mr-1"></i>Disable</>
+                  )}
+                </button>
                 <button
                   onClick={() => openEditModal(cls)}
                   className="px-3 py-1 bg-yellow-400 text-white rounded hover:bg-yellow-500 text-sm"
@@ -413,7 +482,7 @@ export default function InstructorClassRecord() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-40 flex justify-center items-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md shadow-lg">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 w-full max-w-md shadow-lg mx-4">
             <h2 className="text-xl font-semibold mb-4 dark:text-white">
               {editingId ? "Edit Class" : "Add New Class"}
             </h2>
@@ -491,8 +560,8 @@ export default function InstructorClassRecord() {
               {/* Term */}
               <div>
                 <label className="block text-sm font-medium mb-2 dark:text-gray-300">Term</label>
-                <div className="flex gap-2">
-                  {(["Midterm", "Final", "Summer"] as const).map((t) => (
+                <div className="grid grid-cols-3 gap-2">
+                  {(["Midterm", "Final", "Midyear"] as const).map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -508,7 +577,7 @@ export default function InstructorClassRecord() {
                       }`}
                     >
                       <i className={`pi text-xs ${term === t ? "pi-check-circle" : "pi-circle"}`}></i>
-                      {t === "Summer" ? "Summer Term" : t}
+                      {t === "Midyear" ? "Midyear" : t}
                     </button>
                   ))}
                 </div>

@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { doc, getDoc, collectionGroup, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc, getDocFromServer, collection, collectionGroup, query, where, getDocs } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
 import { useNavigate } from "react-router-dom";
+import bgImage from "../assets/background.jpg";
+import { logger } from "../utils/logger";
+import { normalizeForComparison } from "../utils/formatters";
+import {
+  checkLoginRateLimit,
+  recordFailedLogin,
+  clearLoginRateLimit,
+  sanitizeName,
+  sanitizeId,
+} from "../utils/security";
 
 type FocusKeys = "first" | "last" | "id";
 
@@ -85,64 +95,129 @@ export default function HomePage() {
     e.preventDefault();
     setError("");
 
-    const trimmedId = idNumber.trim();
-    const trimmedFirst = firstName.trim().toLowerCase();
-    const trimmedLast = lastName.trim().toLowerCase();
+    // ── Rate limit check (client-side friction against enumeration) ──────
+    const rl = checkLoginRateLimit();
+    if (!rl.allowed) {
+      const mins = Math.ceil(rl.remainingMs / 60_000);
+      setError(`Too many attempts. Please wait ${mins} minute${mins !== 1 ? "s" : ""} before trying again.`);
+      return;
+    }
+
+    // ── Sanitise inputs before any Firestore lookup ───────────────────────
+    const trimmedId    = sanitizeId(idNumber);
+    const trimmedFirst = sanitizeName(firstName).toLowerCase();
+    const trimmedLast  = sanitizeName(lastName).toLowerCase();
 
     if (!trimmedId || !trimmedFirst || !trimmedLast) {
       setError("Please complete all fields.");
       return;
     }
 
+    if (trimmedId.length < 4) {
+      setError("ID number is too short.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // Step 1: Verify identity via top-level /students/{id} doc
+      // Step 1: Verify identity via top-level /students/{id} doc.
+      // Use getDocFromServer to bypass the offline cache — a stale "not-found"
+      // cache entry would otherwise block a student whose record was recently created.
       let identityFirst = "";
       let identityLast = "";
       let verified = false;
 
-      const studentSnap = await getDoc(doc(db, "students", trimmedId));
-      if (studentSnap.exists()) {
-        const d = studentSnap.data() as Record<string, unknown>;
-        if (
-          String(d.firstName ?? "").toLowerCase() === trimmedFirst &&
-          String(d.lastName ?? "").toLowerCase() === trimmedLast
-        ) {
-          verified = true;
-          identityFirst = String(d.firstName ?? "");
-          identityLast = String(d.lastName ?? "");
-        }
+      // ── Lookup 1: direct document read by ID ─────────────────────────────────
+      let studentSnap = await getDocFromServer(doc(db, "students", trimmedId)).catch(() => null);
+      if (!studentSnap) {
+        studentSnap = await getDoc(doc(db, "students", trimmedId));
       }
 
-      // Fallback: check any subcollection if top-level doc missing or name mismatch
+      // ID number is the PRIMARY identifier. Names are used only for secondary
+      // identity verification and are compared after Unicode normalisation so
+      // that special-character variants (e.g. "Meñoza" vs "Menoza") are treated
+      // as equivalent.  The DISPLAYED name always comes from the database record,
+      // never from what the student typed.
+      const tryMatch = (d: Record<string, unknown>) => {
+        const storedFirst = normalizeForComparison(String(d.firstName ?? ""));
+        const storedLast  = normalizeForComparison(String(d.lastName  ?? ""));
+        const inputFirst  = normalizeForComparison(trimmedFirst);
+        const inputLast   = normalizeForComparison(trimmedLast);
+        logger.debug("[login] normalized stored:", { storedFirst, storedLast }, "input:", { inputFirst, inputLast });
+        return storedFirst === inputFirst && storedLast === inputLast;
+      };
+
+      if (studentSnap?.exists()) {
+        const d = studentSnap.data() as Record<string, unknown>;
+        if (tryMatch(d)) {
+          verified = true;
+          identityFirst = String(d.firstName ?? "").trim();
+          identityLast  = String(d.lastName  ?? "").trim();
+        }
+      } else {
+        logger.debug("[login] no top-level doc for id:", trimmedId);
+      }
+
+      // ── Lookup 2: query top-level /students/ collection by idNumber field ─────
+      // Tries both string and numeric forms of the ID — Firestore is type-strict,
+      // so a number-stored idNumber won't match a string query and vice-versa.
       if (!verified) {
         try {
-          const q = query(
-            collectionGroup(db, "students"),
-            where("idNumber", "==", trimmedId)
-          );
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const sub = snap.docs[0].data() as Record<string, unknown>;
-            if (
-              String(sub.firstName ?? "").toLowerCase() === trimmedFirst &&
-              String(sub.lastName ?? "").toLowerCase() === trimmedLast
-            ) {
+          const numId = Number(trimmedId);
+          const idVariants: (string | number)[] = [trimmedId];
+          if (!isNaN(numId) && String(numId) === trimmedId) idVariants.push(numId);
+
+          for (const idVal of idVariants) {
+            const q2 = query(collection(db, "students"), where("idNumber", "==", idVal));
+            const snap2 = await getDocs(q2);
+            logger.debug("[login] top-level field query hits:", snap2.size, "for", idVal);
+            for (const d2 of snap2.docs) {
+              if (tryMatch(d2.data() as Record<string, unknown>)) {
+                verified = true;
+                identityFirst = String(d2.data().firstName ?? "").trim();
+                identityLast  = String(d2.data().lastName  ?? "").trim();
+                break;
+              }
+            }
+            if (verified) break;
+          }
+        } catch (err2) {
+          console.error("[login] top-level field query failed:", err2);
+        }
+      }
+
+      // ── Lookup 3: collection group query across class subcollections ───────────
+      // Requires a Firestore collection-group index on the "idNumber" field.
+      if (!verified) {
+        try {
+          const q3 = query(collectionGroup(db, "students"), where("idNumber", "==", trimmedId));
+          const snap3 = await getDocs(q3);
+          logger.debug("[login] collection-group query hits:", snap3.size);
+          for (const d3 of snap3.docs) {
+            if (tryMatch(d3.data() as Record<string, unknown>)) {
               verified = true;
-              identityFirst = String(sub.firstName ?? "");
-              identityLast = String(sub.lastName ?? "");
+              identityFirst = String(d3.data().firstName ?? "").trim();
+              identityLast  = String(d3.data().lastName  ?? "").trim();
+              break;
             }
           }
-        } catch {
-          // Collection group index not yet ready — ignore
+        } catch (groupErr) {
+          console.error("[login] collection-group query failed:", groupErr);
+          const msg = String((groupErr as { message?: string }).message ?? "");
+          if (msg.toLowerCase().includes("index")) {
+            setError("Service configuration error — please contact the administrator.");
+            return;
+          }
         }
       }
 
       if (!verified) {
+        recordFailedLogin(); // track against rate limit
         setError("Invalid name or ID number.");
         return;
       }
+      clearLoginRateLimit(); // successful match — reset the counter
 
       // Step 2: Collect ALL class enrollments for this student
       const safeNum = (val: unknown): number | null => {
@@ -164,12 +239,13 @@ export default function HomePage() {
         );
         const snap = await getDocs(q);
         subDocs = snap.docs as typeof subDocs;
-      } catch {
+      } catch (enrollErr) {
+        console.error("Enrollment collection group query failed:", enrollErr);
         // Fall back to top-level doc if collection group query fails
       }
 
       // If collection group returned nothing but top-level doc exists, build one entry
-      if (subDocs.length === 0 && studentSnap.exists()) {
+      if (subDocs.length === 0 && studentSnap?.exists()) {
         const d = studentSnap.data() as Record<string, unknown>;
         const syntheticClassId = String(d.classId ?? "");
         const tsToIsoFallback = (ts: unknown): string | null => {
@@ -335,9 +411,13 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-200 p-6">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
-        <h1 className="text-4xl font-bold text-center text-blue-700 mb-2">
+    <div
+      className="min-h-screen flex items-center justify-center p-6 relative"
+      style={{ backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" }}
+    >
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative z-10 bg-white rounded-3xl shadow-2xl w-full max-w-md p-5 sm:p-8">
+        <h1 className="text-2xl sm:text-4xl font-bold text-center text-blue-700 mb-2">
           Grade Consultation
         </h1>
 

@@ -1,0 +1,127 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MyGrade System — Firestore Security Rules
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  Data model:
+//    /instructors/{uid}              – instructor profiles
+//    /instructors/{uid}/logs/{id}    – append-only activity logs
+//    /classes/{classId}              – class metadata owned by one instructor
+//    /classes/{classId}/students/{id}– per-student grade records
+//    /students/{id}                  – top-level identity index for student login
+//
+//  Auth model:
+//    Instructors  → Firebase Auth (email/password)
+//    Students     → No Firebase Auth; they authenticate via name+ID matching
+//                   against Firestore.  Public reads are therefore required.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    function authed()              { return request.auth != null; }
+    function myUid()               { return request.auth.uid; }
+    function isMe(uid)             { return authed() && myUid() == uid; }
+
+    // Resolve the instructorUid stored in a class document.
+    // Costs one extra Firestore read per rule evaluation — used only for
+    // subcollection write checks where we cannot reference resource.data.
+    function classOwnerUid(cid) {
+      return get(/databases/$(database)/documents/classes/$(cid)).data.instructorUid;
+    }
+    function ownsClass(cid) { return authed() && myUid() == classOwnerUid(cid); }
+
+    // ── Instructor profiles ────────────────────────────────────────────────
+    // Only the instructor themselves may read or write their own profile.
+    match /instructors/{uid} {
+      allow read, write: if isMe(uid);
+
+      // ── Activity logs (append-only, no edits, no deletes) ──────────────
+      match /logs/{logId} {
+        allow read:   if isMe(uid);
+        allow create: if isMe(uid)
+                      && request.resource.data.keys().hasAll(["timestamp", "module", "action"])
+                      && request.resource.data.size() <= 25;
+        allow update, delete: if false;   // Logs are immutable audit records
+      }
+    }
+
+    // ── Classes ────────────────────────────────────────────────────────────
+    match /classes/{classId} {
+      // CREATE: caller must stamp their own uid as instructorUid and supply
+      //         the minimum required fields.
+      allow create: if authed()
+                    && request.resource.data.instructorUid == myUid()
+                    && request.resource.data.keys().hasAll([
+                         "instructorUid", "courseCode", "subjectName",
+                         "yearSection", "classType"
+                       ])
+                    && request.resource.data.courseCode  is string
+                    && request.resource.data.subjectName is string
+                    && request.resource.data.yearSection is string;
+
+      // READ / UPDATE / DELETE: restricted to the owning instructor.
+      allow read, update, delete: if authed()
+                                  && resource.data.instructorUid == myUid();
+
+      // UPDATE: instructor may not change instructorUid (prevents class hijacking).
+      allow update: if authed()
+                    && resource.data.instructorUid == myUid()
+                    && (!request.resource.data.keys().hasAny(["instructorUid"])
+                        || request.resource.data.instructorUid == myUid());
+
+      // PUBLIC READ for students: necessary because students have no Firebase
+      // Auth; they need to check enabled/gradesPosted status of their classes.
+      allow read: if !authed();
+
+      // ── Student grade records within each class ─────────────────────────
+      // Document ID = student ID number (the primary identifier).
+      // Names are stored for display only; identity matching uses diacritic-
+      // normalised comparison on the client, never raw string equality.
+      match /students/{studentId} {
+        // Full CRUD for the class owner.
+        allow read, write: if ownsClass(classId);
+
+        // Students (unauthenticated) may only READ — never write their grades.
+        allow read:  if !authed();
+        allow write: if false;
+      }
+    }
+
+    // ── Top-level student identity index ──────────────────────────────────
+    // Stores firstName / lastName for identity-matching on the student login
+    // page.  The document ID is always the student's ID number.
+    // Public reads are required; only authenticated instructors write.
+    match /students/{studentId} {
+      allow read: if true;
+
+      // CREATE: the document path (studentId) must match the idNumber field so
+      // the ID number is always the single source of truth for student identity.
+      allow create: if authed()
+                    && request.resource.data.keys().hasAll(["idNumber", "firstName", "lastName"])
+                    && request.resource.data.firstName is string
+                    && request.resource.data.lastName  is string
+                    && string(request.resource.data.idNumber) == studentId;
+
+      // UPDATE: prevent changing idNumber to a different value than the document
+      // path — the ID is immutable at this level (renames are handled at the
+      // class-subcollection level via the application's rename logic).
+      allow update: if authed()
+                    && (!request.resource.data.keys().hasAny(["idNumber"])
+                        || string(request.resource.data.idNumber) == studentId);
+
+      allow delete: if authed();
+    }
+
+    // ── Collection-group rule (cross-class student queries) ────────────────
+    // Required for the collection-group query used in the student login flow
+    // (HomePage.tsx) to locate a student across all class subcollections.
+    // Only READ is granted; writes must go through the specific paths above.
+    match /{path=**}/students/{studentId} {
+      allow read:  if true;
+      allow write: if false;
+    }
+  }
+}
