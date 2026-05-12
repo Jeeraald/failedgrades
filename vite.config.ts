@@ -10,9 +10,4 @@ export default defineConfig({
       },
     }),
   ],
-  // Mark console.debug/log as pure (side-effect-free) so esbuild can tree-shake
-  // them out of production bundles. console.warn/error are kept for visibility.
-  esbuild: {
-    pure: ['console.debug', 'console.log'],
-  },
 })
