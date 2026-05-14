@@ -17,18 +17,6 @@ import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
 import { logActivity } from "../utils/activityLog";
 import { toTitleCase } from "../utils/formatters";
 
-declare global {
-  interface Window {
-    grecaptcha: {
-      ready: (cb: () => void) => void;
-      render: (container: HTMLElement, params: object) => number;
-      getResponse: (widgetId?: number) => string;
-      reset: (widgetId?: number) => void;
-    };
-    onRecaptchaLoad: () => void;
-  }
-}
-
 type Tab = "profile" | "password" | "appearance" | "logs";
 
 type LogEntry = {
@@ -108,12 +96,6 @@ export default function InstructorSettings() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
 
-  // reCAPTCHA
-  const [captchaVerified, setCaptchaVerified] = useState(false);
-  const [captchaReady, setCaptchaReady] = useState(false);
-  const captchaRef = useRef<HTMLDivElement>(null);
-  const widgetIdRef = useRef<number | null>(null);
-
   // Appearance
   const [darkMode, setDarkMode] = useState(
     document.documentElement.classList.contains("dark")
@@ -148,45 +130,6 @@ export default function InstructorSettings() {
     });
     return () => unsubscribe();
   }, []);
-
-  // Load reCAPTCHA script
-  useEffect(() => {
-    window.onRecaptchaLoad = () => setCaptchaReady(true);
-    const existing = document.getElementById("recaptcha-script");
-    if (!existing) {
-      const script = document.createElement("script");
-      script.id = "recaptcha-script";
-      script.src =
-        "https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoad&render=explicit";
-      script.async = true;
-      script.defer = true;
-      document.head.appendChild(script);
-    } else {
-      if (window.grecaptcha) setCaptchaReady(true);
-    }
-
-    return () => {
-      // Prevent the callback from firing into a stale/unmounted component
-      window.onRecaptchaLoad = () => {};
-    };
-  }, []);
-
-  // Render reCAPTCHA when password tab is active
-  useEffect(() => {
-    if (activeTab !== "password" || !captchaReady || !captchaRef.current) return;
-    if (widgetIdRef.current !== null) return;
-
-    window.grecaptcha.ready(() => {
-      if (captchaRef.current && widgetIdRef.current === null) {
-        widgetIdRef.current = window.grecaptcha.render(captchaRef.current, {
-          sitekey: "6LeNldssAAAAAHBEjIbR1iHNOWcS5kKkfcLo_TqQ",
-          callback: () => setCaptchaVerified(true),
-          "expired-callback": () => setCaptchaVerified(false),
-          "error-callback": () => setCaptchaVerified(false),
-        });
-      }
-    });
-  }, [activeTab, captchaReady]);
 
   // Logs real-time subscription (only while Logs tab is active)
   useEffect(() => {
@@ -230,13 +173,9 @@ export default function InstructorSettings() {
     return () => unsub();
   }, [activeTab, uid]);
 
-  // Reset captcha when leaving password tab and clear the rendered widget DOM
-  // to prevent multiple widget instances from accumulating on rapid tab switches.
+  // Reset password fields when leaving password tab
   useEffect(() => {
     if (activeTab !== "password") {
-      if (captchaRef.current) captchaRef.current.innerHTML = "";
-      widgetIdRef.current = null;
-      setCaptchaVerified(false);
       setPasswordTouched(false);
       setNewPassword("");
       setCurrentPassword("");
@@ -365,16 +304,6 @@ export default function InstructorSettings() {
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!captchaVerified) {
-      toast.current?.show({
-        severity: "warn",
-        summary: "Verification Required",
-        detail: "Please complete the reCAPTCHA verification.",
-        life: 3000,
-      });
-      return;
-    }
-
     if (!isPasswordStrong(newPassword)) {
       toast.current?.show({
         severity: "warn",
@@ -415,10 +344,6 @@ export default function InstructorSettings() {
       setNewPassword("");
       setConfirmPassword("");
       setPasswordTouched(false);
-      setCaptchaVerified(false);
-      if (widgetIdRef.current !== null) {
-        window.grecaptcha.reset(widgetIdRef.current);
-      }
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
       if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
@@ -923,17 +848,9 @@ export default function InstructorSettings() {
                 )}
               </div>
 
-              {/* reCAPTCHA */}
-              <div className="flex flex-col items-center gap-2">
-                <div ref={captchaRef}></div>
-                {!captchaReady && (
-                  <p className="text-xs text-gray-400">Loading verification...</p>
-                )}
-              </div>
-
               <button
                 type="submit"
-                disabled={passwordLoading || !captchaVerified || !isPasswordStrong(newPassword)}
+                disabled={passwordLoading || !isPasswordStrong(newPassword)}
                 className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 disabled:opacity-60 font-semibold transition"
               >
                 {passwordLoading ? "Updating..." : "Change Password"}

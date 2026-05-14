@@ -1,19 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "../firebase/firebaseConfig";
 import { useNavigate } from "react-router-dom";
-
-declare global {
-  interface Window {
-    grecaptcha: {
-      ready: (cb: () => void) => void;
-      render: (container: HTMLElement, params: object) => number;
-      getResponse: (widgetId?: number) => string;
-      reset: (widgetId?: number) => void;
-    };
-    onRecaptchaLoad: () => void;
-  }
-}
 
 export default function ForgotPassword() {
   const navigate = useNavigate();
@@ -21,67 +9,17 @@ export default function ForgotPassword() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
-  const [captchaVerified, setCaptchaVerified] = useState(false);
-  const [captchaReady, setCaptchaReady] = useState(false);
-  const captchaRef = useRef<HTMLDivElement>(null);
-  const widgetIdRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    window.onRecaptchaLoad = () => setCaptchaReady(true);
-
-    const existing = document.getElementById("recaptcha-script");
-    if (!existing) {
-      const script = document.createElement("script");
-      script.id = "recaptcha-script";
-      script.src =
-        "https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoad&render=explicit";
-      script.async = true;
-      script.defer = true;
-      document.head.appendChild(script);
-    } else {
-      if (window.grecaptcha) setCaptchaReady(true);
-    }
-
-    return () => {
-      // Prevent the callback firing on a stale/unmounted component
-      window.onRecaptchaLoad = () => {};
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!captchaReady || !captchaRef.current || widgetIdRef.current !== null) return;
-
-    window.grecaptcha.ready(() => {
-      if (captchaRef.current && widgetIdRef.current === null) {
-        widgetIdRef.current = window.grecaptcha.render(captchaRef.current, {
-          sitekey: "6LeNldssAAAAAHBEjIbR1iHNOWcS5kKkfcLo_TqQ",
-          callback: () => setCaptchaVerified(true),
-          "expired-callback": () => setCaptchaVerified(false),
-          "error-callback": () => setCaptchaVerified(false),
-        });
-      }
-    });
-  }, [captchaReady]);
 
   const handleSendLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setSuccess("");
 
-    if (!captchaVerified) {
-      setError("Please complete the reCAPTCHA verification.");
-      return;
-    }
-
     setLoading(true);
     try {
       await sendPasswordResetEmail(auth, email);
       setSuccess("Password reset link sent! Check your email.");
       setEmail("");
-      setCaptchaVerified(false);
-      if (widgetIdRef.current !== null) {
-        window.grecaptcha.reset(widgetIdRef.current);
-      }
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
       if (code === "auth/user-not-found" || code === "auth/invalid-email") {
@@ -124,14 +62,6 @@ export default function ForgotPassword() {
             />
           </div>
 
-          {/* reCAPTCHA widget */}
-          <div className="flex justify-center">
-            {!captchaReady && (
-              <p className="text-xs text-gray-400">Loading verification...</p>
-            )}
-            <div ref={captchaRef}></div>
-          </div>
-
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-red-600 text-sm">{error}</p>
@@ -146,7 +76,7 @@ export default function ForgotPassword() {
 
           <button
             type="submit"
-            disabled={loading || !captchaVerified}
+            disabled={loading}
             className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 disabled:opacity-60 font-semibold transition"
           >
             {loading ? "Sending..." : "Send Reset Link"}
