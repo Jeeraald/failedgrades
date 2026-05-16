@@ -17,6 +17,7 @@ import {
   formatPostedAt,
   toNum,
 } from "../utils/studentSession";
+import { formatFullName } from "../utils/formatters";
 
 // ── SubjectCard ───────────────────────────────────────────────────────────────
 
@@ -244,7 +245,7 @@ export default function StudentSubjectList() {
 
   if (!session) return <Navigate to="/" replace />;
 
-  const fullName = `${session.lastName.toUpperCase()}, ${session.firstName.toUpperCase()}`;
+  const fullName = formatFullName(session.lastName, session.firstName);
   const viewedCount = classes.filter((c) => viewedSet.has(c.classId) && c.gradesPosted).length;
 
   const handleView = (cls: EnrolledClass) => {

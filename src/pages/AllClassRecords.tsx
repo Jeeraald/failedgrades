@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { formatFullName } from "../utils/formatters";
 import { Navigate, useNavigate } from "react-router-dom";
 import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
@@ -310,7 +311,7 @@ export default function AllClassRecords() {
     return <Navigate to="/subject-select" replace />;
   }
 
-  const fullName = `${session.lastName.toUpperCase()}, ${session.firstName.toUpperCase()}`;
+  const fullName = formatFullName(session.lastName, session.firstName);
 
   const handleViewFull = (cls: EnrolledClass) => {
     sessionStorage.setItem("studentRecord", JSON.stringify(cls));

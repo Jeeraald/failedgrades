@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { saveDraft, clearDraft } from "../utils/offlineStorage";
-import { toTitleCase } from "../utils/formatters";
+import { formatFullName, parseFullName, stripMiddleInitials, stripSuffixes } from "../utils/formatters";
 import { validatePastePayload, sanitizePastedGrade, sanitizePastedText } from "../utils/security";
 import { useOnlineStatus } from "../utils/useOnlineStatus";
 import ConnectionStatus from "../components/ConnectionStatus";
@@ -162,8 +162,13 @@ export default function InstructorUploadGrades() {
   const [pasteConflictModal, setPasteConflictModal] = useState<DuplicateConflict[] | null>(null);
   const pendingPasteRef = useRef<{ replaceAll: () => void; skipDups: () => void } | null>(null);
 
-  // Sort
-  const [sortField, setSortField] = useState<"lastName" | "firstName" | null>("lastName");
+  // Inline name editing — double-click Full Name cell to edit as a single "LASTNAME, Firstname" string
+  const [editingName, setEditingName] = useState<{
+    idNumber: string; _key?: string | number; value: string;
+  } | null>(null);
+
+  // Sort (always by lastName — Full Name column header toggles it)
+  const [sortField, setSortField] = useState<"lastName" | null>("lastName");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
   // Row checkbox selection
@@ -227,16 +232,16 @@ export default function InstructorUploadGrades() {
     // ── Shared helpers (captured via refs — always fresh) ────────────────
     const colToField = (c: number): string | null => {
       if (c === 0) return "idNumber";
-      if (c === 1) return "lastName";
-      if (c === 2) return "firstName";
+      if (c === 1) return null; // fullName column is read-only (computed from lastName+firstName)
       const cols = allDataColsRef.current;
-      const di = c - 3;
+      const di = c - 2;
       if (di >= 0 && di < cols.length) return cols[di].key;
-      if (c === 3 + cols.length) return termGradeKeyRef.current;
+      if (c === 2 + cols.length) return termGradeKeyRef.current;
       return null;
     };
 
     const getCellVal = (student: StudentRecord, c: number): string => {
+      if (c === 1) return formatFullName(String(student.lastName ?? ""), String(student.firstName ?? ""));
       const f = colToField(c);
       if (!f) return "";
       const v = student[f];
@@ -329,7 +334,10 @@ export default function InstructorUploadGrades() {
             await setDoc(doc(db, "classes", cid, "students", docId), { ...payload, instructorUid: uid }, { merge: true });
             await setDoc(doc(db, "students", docId), { ...payload, classId: cid, instructorUid: uid }, { merge: true });
           }));
-        } catch (err) { console.error("Undo failed:", err); }
+        } catch (err) {
+          console.error("Undo failed:", err);
+          toast.current?.show({ severity: "error", summary: "Undo Failed", detail: "Could not revert the last change. Please try again.", life: 3000 });
+        }
         return;
       }
 
@@ -425,7 +433,10 @@ export default function InstructorUploadGrades() {
             await setDoc(doc(db, "classes", cid, "students", docId), { ...payload, instructorUid: rUid }, { merge: true });
             await setDoc(doc(db, "students", docId), { ...payload, classId: cid, instructorUid: rUid }, { merge: true });
           }));
-        } catch (err) { console.error("Redo failed:", err); }
+        } catch (err) {
+          console.error("Redo failed:", err);
+          toast.current?.show({ severity: "error", summary: "Redo Failed", detail: "Could not reapply the change. Please try again.", life: 3000 });
+        }
         return;
       }
 
@@ -462,7 +473,7 @@ export default function InstructorUploadGrades() {
             toast.current?.show({
               severity: "info",
               summary: "Cut",
-              detail: `${nR} row${nR !== 1 ? "s" : ""} × ${nC} col${nC !== 1 ? "s" : ""} cut — paste to move`,
+              detail: `${nR} row${nR !== 1 ? "s" : ""} × ${nC} column${nC !== 1 ? "s" : ""} cut — paste to move`,
               life: 2000,
             });
           })
@@ -477,7 +488,7 @@ export default function InstructorUploadGrades() {
         if (!cSel) return;
         const recs = paginatedRecordsRef.current;
         const cols = allDataColsRef.current;
-        const totalCols = 3 + cols.length + 1;
+        const totalCols = 2 + cols.length + 1; // 0=id, 1=fullName(readonly), 2..N-1=data, N=grade
         const totalRows = recs.length;
 
         let r = Math.min(cSel.anchor.r, cSel.end.r);
@@ -485,8 +496,10 @@ export default function InstructorUploadGrades() {
 
         if (e.shiftKey) {
           c--; if (c < 0) { c = totalCols - 1; r = Math.max(0, r - 1); }
+          if (c === 1) c = 0; // skip read-only fullName column going backward
         } else {
           c++; if (c >= totalCols) { c = 0; r = Math.min(totalRows - 1, r + 1); }
+          if (c === 1) c = 2; // skip read-only fullName column going forward
         }
 
         setCellSel({ anchor: { r, c }, end: { r, c } });
@@ -537,7 +550,10 @@ export default function InstructorUploadGrades() {
       if (!sel) return;
       const isRange = sel.anchor.r !== sel.end.r || sel.anchor.c !== sel.end.c;
 
-      if ((e.key === "Delete" || e.key === "Backspace") && isRange) {
+      // Delete/Backspace: clear selected range, OR clear a single non-ID cell when Delete is pressed
+      // (Backspace on a single cell is left to the browser so users can still edit character-by-character)
+      const isClearKey = e.key === "Delete" || (e.key === "Backspace" && isRange);
+      if (isClearKey && (isRange || (e.key === "Delete" && sel.anchor.c !== 0 && sel.anchor.c !== 1))) {
         e.preventDefault();
         const recs = paginatedRecordsRef.current;
         const cid = classIdRef.current;
@@ -670,7 +686,7 @@ export default function InstructorUploadGrades() {
             const field = colToField(tableCol);
             if (!field) continue;
             const raw = pastedCells[pc].trim();
-            const isNumeric = tableCol >= 3;
+            const isNumeric = tableCol >= 2; // c=0 id(text), c=1 fullName(skipped), c≥2 scores/grade(numeric)
             // Sanitize: clamp grades to valid range, strip injection chars from text
             const value: string | number = isNumeric
               ? sanitizePastedGrade(raw)
@@ -686,7 +702,7 @@ export default function InstructorUploadGrades() {
             const field = colToField(tableCol);
             if (!field) continue;
             const raw = pastedCells[pc].trim();
-            const isNumeric = tableCol >= 3;
+            const isNumeric = tableCol >= 2; // c=0 id(text), c=1 fullName(skipped), c≥2 scores/grade(numeric)
             fields[field] = isNumeric ? sanitizePastedGrade(raw) : sanitizePastedText(raw);
           }
           const studentId =
@@ -776,11 +792,10 @@ export default function InstructorUploadGrades() {
             const student = srcRecs[r];
             if (!student) continue;
             for (let c = cSel.minC; c <= cSel.maxC; c++) {
+              if (c === 1) continue; // fullName column is read-only — skip
               let field: string | null = null;
-              if (c === 1) field = "lastName";
-              else if (c === 2) field = "firstName";
-              else if (c >= 3 && c < 3 + srcCols.length) field = srcCols[c - 3].key;
-              else if (c === 3 + srcCols.length) field = srcGKey;
+              if (c >= 2 && c < 2 + srcCols.length) field = srcCols[c - 2].key;
+              else if (c === 2 + srcCols.length) field = srcGKey;
               if (field) toClear.push({ idNumber: student.idNumber, field });
             }
           }
@@ -1103,16 +1118,18 @@ export default function InstructorUploadGrades() {
     setAddStudentDupWarning(null);
 
     try {
+      const cleanLast  = stripSuffixes(newStudentLast.trim());
+      const cleanFirst = stripMiddleInitials(stripSuffixes(newStudentFirst.trim()));
       await setDoc(doc(db, "classes", classId, "students", idNumber), {
         idNumber,
-        lastName: newStudentLast.trim(),
-        firstName: newStudentFirst.trim(),
+        lastName:  cleanLast,
+        firstName: cleanFirst,
         instructorUid: uid,
       }, { merge: true });
       await setDoc(doc(db, "students", idNumber), {
         idNumber,
-        lastName: newStudentLast.trim(),
-        firstName: newStudentFirst.trim(),
+        lastName:  cleanLast,
+        firstName: cleanFirst,
         classId,
         instructorUid: uid,
         courseCode: classInfo?.courseCode ?? "",
@@ -1452,11 +1469,33 @@ export default function InstructorUploadGrades() {
     toast.current?.show({ severity: "success", summary: "Sub-group Added", detail: `"${newSubGroupName.trim()}" added.`, life: 3000 });
   };
 
-  const handleSortToggle = (field: "lastName" | "firstName") => {
+  const handleSortToggle = () => {
     setCellSel(null);
-    if (sortField !== field) { setSortField(field); setSortOrder("asc"); }
+    if (sortField !== "lastName") { setSortField("lastName"); setSortOrder("asc"); }
     else if (sortOrder === "asc") { setSortOrder("desc"); }
     else { setSortField(null); setSortOrder("asc"); }
+  };
+
+  // ── Inline name edit (double-click Full Name cell) ───────────────────
+  const commitNameEdit = async () => {
+    const editing = editingName;
+    setEditingName(null);
+    if (!editing || !classId) return;
+    const { lastName, firstName } = parseFullName(editing.value.trim());
+    const cleanLast  = stripSuffixes(lastName);
+    const cleanFirst = stripMiddleInitials(stripSuffixes(firstName));
+    const docId = String(editing._key ?? editing.idNumber);
+    setRecords(prev => prev.map(r =>
+      r.idNumber === editing.idNumber ? { ...r, lastName: cleanLast, firstName: cleanFirst } : r
+    ));
+    try {
+      await setDoc(doc(db, "classes", classId, "students", docId),
+        { lastName: cleanLast, firstName: cleanFirst, instructorUid: uid }, { merge: true });
+      await setDoc(doc(db, "students", docId),
+        { lastName: cleanLast, firstName: cleanFirst }, { merge: true });
+    } catch {
+      toast.current?.show({ severity: "error", summary: "Name Save Failed", detail: "Could not save the name change.", life: 3000 });
+    }
   };
 
   // ── Col label inline edit ─────────────────────────────────────────────
@@ -1588,7 +1627,7 @@ export default function InstructorUploadGrades() {
     const ws: XLSX.WorkSheet = {};
     const merges: XLSX.Range[] = [];
 
-    const fixedHeaders = ["ID Number", "Last Name", "First Name"];
+    const fixedHeaders = ["ID Number", "Full Name"];
     const dataStart = fixedHeaders.length;
     const mgCol = dataStart + allData.length;
     const totalCols = mgCol + 1;
@@ -1673,10 +1712,9 @@ export default function InstructorUploadGrades() {
     // Column widths
     ws["!cols"] = [
       { wch: 14 }, // ID Number
-      { wch: 16 }, // Last Name
-      { wch: 16 }, // First Name
+      { wch: 28 }, // Full Name
       ...allData.map(() => ({ wch: 14 })),
-      { wch: 14 }, // Midterm Grade
+      { wch: 14 }, // Grade
     ];
     // Row heights
     ws["!rows"] = [{ hpt: 22 }, { hpt: 22 }, { hpt: 22 }];
@@ -1697,7 +1735,7 @@ export default function InstructorUploadGrades() {
     const ws: XLSX.WorkSheet = {};
     const merges: XLSX.Range[] = [];
 
-    const fixedHeaders = ["ID Number", "Last Name", "First Name"];
+    const fixedHeaders = ["ID Number", "Full Name"];
     const dataStart = fixedHeaders.length;
     const mgCol = dataStart + allData.length;
     const totalCols = mgCol + 1;
@@ -1798,8 +1836,7 @@ export default function InstructorUploadGrades() {
       const bg = rowIdx % 2 === 0 ? COLOR.dataEven : COLOR.dataOdd;
 
       setStrCell(r, 0, student.idNumber, dataStyle(bg));
-      setStrCell(r, 1, String(student.lastName ?? ""), dataStyle(bg));
-      setStrCell(r, 2, String(student.firstName ?? ""), dataStyle(bg));
+      setStrCell(r, 1, formatFullName(String(student.lastName ?? ""), String(student.firstName ?? "")), dataStyle(bg));
 
       allData.forEach((col, i) => {
         const val = student[col.key];
@@ -1815,7 +1852,7 @@ export default function InstructorUploadGrades() {
     });
 
     ws["!cols"] = [
-      { wch: 14 }, { wch: 16 }, { wch: 16 },
+      { wch: 14 }, { wch: 28 },
       ...allData.map(() => ({ wch: 14 })),
       { wch: 14 },
     ];
@@ -1901,7 +1938,7 @@ export default function InstructorUploadGrades() {
         const missing = expected.filter((lbl) => !fileLabels.has(norm(lbl)));
 
         // Unknown columns = labels in the file that aren't fixed/known/midterm
-        const ignored = new Set(["id number", "last name", "first name", norm(termGradeLabel)]);
+        const ignored = new Set(["id number", "full name", "last name", "first name", norm(termGradeLabel)]);
         const unknown = headerRow
           .map((c) => String(c ?? "").trim())
           .filter((s) => s.length > 0)
@@ -1958,19 +1995,27 @@ export default function InstructorUploadGrades() {
           }
           const idNumber = String(rawId).trim();
 
-          const lastKey =
-            Object.keys(row).find((k) => norm(k) === "last name") ?? "Last Name";
-          const firstKey =
-            Object.keys(row).find((k) => norm(k) === "first name") ?? "First Name";
+          // Support both the new "Full Name" column and the old "Last Name"/"First Name" columns
+          const fullNameKey = Object.keys(row).find((k) => norm(k) === "full name");
+          const lastKey     = Object.keys(row).find((k) => norm(k) === "last name");
+          const firstKey    = Object.keys(row).find((k) => norm(k) === "first name");
 
-          const cleanRow: Record<string, unknown> = {
-            idNumber,
-            lastName: String(row[lastKey] ?? "").trim(),
-            firstName: String(row[firstKey] ?? "").trim(),
-          };
+          let lastName  = "";
+          let firstName = "";
+          if (fullNameKey) {
+            const parsed = parseFullName(String(row[fullNameKey] ?? "").trim());
+            lastName  = parsed.lastName;
+            firstName = parsed.firstName;
+          } else {
+            lastName  = stripSuffixes(lastKey  ? String(row[lastKey]  ?? "").trim() : "");
+            firstName = stripMiddleInitials(stripSuffixes(firstKey ? String(row[firstKey] ?? "").trim() : ""));
+          }
 
+          const cleanRow: Record<string, unknown> = { idNumber, lastName, firstName };
+
+          const fixedKeys = [idKey, fullNameKey, lastKey, firstKey].filter(Boolean) as string[];
           for (const [excelKey, excelVal] of Object.entries(row)) {
-            if ([idKey, lastKey, firstKey].includes(excelKey)) continue;
+            if (fixedKeys.includes(excelKey)) continue;
             const nk = norm(excelKey);
             if (excelVal === null || excelVal === undefined || String(excelVal).trim() === "") continue;
             const numVal = Number(excelVal);
@@ -2054,7 +2099,8 @@ export default function InstructorUploadGrades() {
     .filter((r) => {
       const s = globalSearch.toLowerCase();
       if (!s) return true;
-      return r.idNumber.toLowerCase().includes(s) || r.lastName.toLowerCase().includes(s) || r.firstName.toLowerCase().includes(s);
+      const full = formatFullName(String(r.lastName ?? ""), String(r.firstName ?? "")).toLowerCase();
+      return r.idNumber.toLowerCase().includes(s) || full.includes(s);
     })
     .sort((a, b) => {
       if (!sortField) return 0;
@@ -2076,7 +2122,7 @@ export default function InstructorUploadGrades() {
 
   const allPageSelected = paginatedRecords.length > 0 && paginatedRecords.every((r) => selectedIds.has(r.idNumber));
 
-  // col index scheme (excludes checkbox col): 0=id, 1=lastName, 2=firstName, 3..N-1=data, N=grade
+  // col index scheme (excludes checkbox col): 0=id, 1=fullName(readonly), 2..N-1=data, N=grade
   // Validation helpers
   const isValidGrade = (v: string | number | undefined) => {
     if (v === "" || v === undefined || v === null) return true;
@@ -2185,9 +2231,8 @@ export default function InstructorUploadGrades() {
   };
 
   // Computed column widths (used for both <th> and sticky <td> left positions)
-  const wId    = getW("_col_id",    90);
-  const wLast  = getW("_col_last",  110);
-  const wFirst = getW("_col_first", 110);
+  const wId    = getW("_col_id",   90);
+  const wName  = getW("_col_name", 200); // Full Name column (wider: "LASTNAME, Firstname")
   const wGrade = getW("_col_grade", MG_WIDTH);
 
   const thBase = "border border-gray-400 dark:border-gray-600 text-center text-xs font-semibold";
@@ -2305,18 +2350,22 @@ export default function InstructorUploadGrades() {
                     <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                       <span className="font-medium text-gray-700 dark:text-gray-200">
                         {type === "Lecture" ? "Lecture-only" : type === "Laboratory" ? "Lab-only" : "Lecture + Lab"}
-                      </span>{" "}class. Double-click column headers to rename. Hover a sub-group or column to add/remove it.
+                      </span>{" "}class. Click a name cell to edit. Double-click column headers to rename. Hover a sub-group or column to add/remove it.
                     </p>
                     <div className="space-y-1.5">
                       {[
-                        ["Ctrl+S", "Save"],
+                        ["Ctrl+S", "Save changes"],
                         ["Ctrl+Z", "Undo"],
                         ["Ctrl+Y", "Redo"],
-                        ["Ctrl+X", "Cut cell"],
-                        ["Ctrl+C", "Copy cell"],
-                        ["Ctrl+V", "Paste cell"],
+                        ["Ctrl+X", "Cut selection"],
+                        ["Ctrl+C", "Copy selection"],
+                        ["Ctrl+V", "Paste"],
                         ["Tab", "Next cell"],
+                        ["Shift+Tab", "Previous cell"],
                         ["↑ / ↓", "Navigate rows"],
+                        ["Delete", "Clear cell / range"],
+                        ["Backspace", "Clear selection"],
+                        ["Escape", "Cancel selection"],
                       ].map(([key, desc]) => (
                         <div key={key} className="flex items-center justify-between gap-3">
                           <span className="text-xs text-gray-500 dark:text-gray-400">{desc}</span>
@@ -2423,7 +2472,10 @@ export default function InstructorUploadGrades() {
             Reset
           </button>
           <input
+            id="grade-search"
+            name="gradeSearch"
             type="text"
+            autoComplete="off"
             placeholder="Search..."
             value={globalSearch}
             onChange={(e) => { setGlobalSearch(e.target.value); setFirst(0); setCellSel(null); }}
@@ -2536,30 +2588,17 @@ export default function InstructorUploadGrades() {
                   onMouseDown={(e) => startColResize("_col_id", 90, e)} />
               </th>
               <th rowSpan={3}
-                className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
-                style={{ minWidth: wLast, width: wLast, position: "sticky", left: CB_WIDTH + wId, zIndex: 41 }}
-                onClick={() => handleSortToggle("lastName")}
-                title="Sort by Last Name"
+                className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 border-r-2 border-gray-400 dark:border-gray-600 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
+                style={{ minWidth: wName, width: wName, position: "sticky", left: CB_WIDTH + wId, zIndex: 41 }}
+                onClick={() => handleSortToggle()}
+                title="Sort by Full Name"
               >
                 <div className="flex items-center justify-center gap-1">
-                  Last Name
+                  Full Name
                   <i className={`pi text-[9px] ${sortField === "lastName" ? (sortOrder === "asc" ? "pi-sort-amount-up" : "pi-sort-amount-down-alt") : "pi-sort-alt"} ${sortField === "lastName" ? "text-blue-500" : "text-gray-400"}`}></i>
                 </div>
                 <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", zIndex: 50 }}
-                  onMouseDown={(e) => { e.stopPropagation(); startColResize("_col_last", 110, e); }} />
-              </th>
-              <th rowSpan={3}
-                className={`${thBase} bg-yellow-50 dark:bg-gray-700 dark:text-gray-100 border-r-2 border-gray-400 dark:border-gray-600 px-2 py-1 cursor-pointer select-none hover:bg-yellow-100 dark:hover:bg-gray-600 relative`}
-                style={{ minWidth: wFirst, width: wFirst, position: "sticky", left: CB_WIDTH + wId + wLast, zIndex: 41 }}
-                onClick={() => handleSortToggle("firstName")}
-                title="Sort by First Name"
-              >
-                <div className="flex items-center justify-center gap-1">
-                  First Name
-                  <i className={`pi text-[9px] ${sortField === "firstName" ? (sortOrder === "asc" ? "pi-sort-amount-up" : "pi-sort-amount-down-alt") : "pi-sort-alt"} ${sortField === "firstName" ? "text-blue-500" : "text-gray-400"}`}></i>
-                </div>
-                <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 5, cursor: "col-resize", zIndex: 50 }}
-                  onMouseDown={(e) => { e.stopPropagation(); startColResize("_col_first", 110, e); }} />
+                  onMouseDown={(e) => { e.stopPropagation(); startColResize("_col_name", 200, e); }} />
               </th>
 
               {type !== "Laboratory" && activeLecCols.length > 0 && (
@@ -2745,7 +2784,7 @@ export default function InstructorUploadGrades() {
           <tbody>
             {paginatedRecords.length === 0 ? (
               <tr>
-                <td colSpan={4 + allDataCols.length + 1}
+                <td colSpan={3 + allDataCols.length + 1}
                   className="text-center text-gray-400 dark:text-gray-500 py-10 border border-gray-200 dark:border-gray-700 dark:bg-gray-900">
                   No records. Click "Add Student" to start.
                 </td>
@@ -2783,6 +2822,8 @@ export default function InstructorUploadGrades() {
                       onMouseEnter={() => { if (isDraggingRef.current) setCellSel(prev => prev ? { ...prev, end: { r: index, c: 0 } } : null); }}
                     >
                       <input
+                        name="studentId"
+                        autoComplete="off"
                         className={`w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:ring-1 focus:rounded text-center transition-colors ${
                           isDuplicateId
                             ? "text-red-600 dark:text-red-400 focus:bg-red-50 dark:focus:bg-red-900/20 focus:ring-red-400"
@@ -2790,7 +2831,7 @@ export default function InstructorUploadGrades() {
                         }`}
                         value={student.idNumber}
                         onFocus={() => handleCellFocus(student.idNumber, "idNumber", student.idNumber)}
-                        onBlur={() => handleCellBlur(student.idNumber, "idNumber", student.idNumber)}
+                        onBlur={(e) => handleCellBlur(student.idNumber, "idNumber", e.target.value)}
                         onChange={(e) => handleCellChange(student.idNumber, "idNumber", e.target.value)}
                       />
                       {isInCellSel(index, 0) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
@@ -2798,45 +2839,56 @@ export default function InstructorUploadGrades() {
                       {isCut(index, 0)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
                     </td>
 
-                    {/* Last Name */}
-                    <td className={`${tdBase}`}
-                      style={{ minWidth: wLast, width: wLast, position: "sticky", left: CB_WIDTH + wId, zIndex: 10, backgroundColor: isSelected ? rowSel : rowBg }}
-                      onMouseDown={() => { setCellSel({ anchor: { r: index, c: 1 }, end: { r: index, c: 1 } }); isDraggingRef.current = true; }}
-                      onMouseEnter={() => { if (isDraggingRef.current) setCellSel(prev => prev ? { ...prev, end: { r: index, c: 1 } } : null); }}
-                    >
-                      <input
-                        className="w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-1 focus:ring-blue-300 focus:rounded dark:text-gray-100"
-                        value={toTitleCase(String(student.lastName ?? ""))}
-                        onFocus={() => handleCellFocus(student.idNumber, "lastName", student.lastName)}
-                        onBlur={() => handleCellBlur(student.idNumber, "lastName", student.lastName)}
-                        onChange={(e) => handleCellChange(student.idNumber, "lastName", toTitleCase(e.target.value))}
-                      />
-                      {isInCellSel(index, 1) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
-                      {isCopied(index, 1)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
-                      {isCut(index, 1)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
-                    </td>
-
-                    {/* First Name */}
-                    <td className={`${tdBase} border-r-2 border-gray-300`}
-                      style={{ minWidth: wFirst, width: wFirst, position: "sticky", left: CB_WIDTH + wId + wLast, zIndex: 10, backgroundColor: isSelected ? rowSel : rowBg }}
-                      onMouseDown={() => { setCellSel({ anchor: { r: index, c: 2 }, end: { r: index, c: 2 } }); isDraggingRef.current = true; }}
-                      onMouseEnter={() => { if (isDraggingRef.current) setCellSel(prev => prev ? { ...prev, end: { r: index, c: 2 } } : null); }}
-                    >
-                      <input
-                        className="w-full px-1 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:ring-1 focus:ring-blue-300 focus:rounded dark:text-gray-100"
-                        value={toTitleCase(String(student.firstName ?? ""))}
-                        onFocus={() => handleCellFocus(student.idNumber, "firstName", student.firstName)}
-                        onBlur={() => handleCellBlur(student.idNumber, "firstName", student.firstName)}
-                        onChange={(e) => handleCellChange(student.idNumber, "firstName", toTitleCase(e.target.value))}
-                      />
-                      {isInCellSel(index, 2) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
-                      {isCopied(index, 2)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
-                      {isCut(index, 2)        && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #f97316", outlineOffset: "-2px", background: "rgba(249,115,22,0.06)", zIndex: 7 }} />}
-                    </td>
+                    {/* Full Name — single-click to edit lastName / firstName inline */}
+                    {(() => {
+                      const isEditingThisName = editingName?.idNumber === student.idNumber;
+                      return (
+                        <td className={`${tdBase} border-r-2 border-gray-300`}
+                          style={{ minWidth: wName, width: wName, position: "sticky", left: CB_WIDTH + wId, zIndex: 10, backgroundColor: isSelected ? rowSel : rowBg }}
+                          onMouseDown={() => {
+                            if (isEditingThisName) return;
+                            setCellSel({ anchor: { r: index, c: 1 }, end: { r: index, c: 1 } });
+                            isDraggingRef.current = true;
+                          }}
+                          onMouseEnter={() => { if (isDraggingRef.current && !isEditingThisName) setCellSel(prev => prev ? { ...prev, end: { r: index, c: 1 } } : null); }}
+                          onClick={(e) => {
+                            if (isEditingThisName) return;
+                            e.stopPropagation();
+                            setCellSel(null);
+                            setEditingName({ idNumber: student.idNumber, _key: student._key, value: formatFullName(String(student.lastName ?? ""), String(student.firstName ?? "")) });
+                          }}
+                        >
+                          {isEditingThisName ? (
+                            <input
+                              autoFocus
+                              name="fullName"
+                              autoComplete="off"
+                              value={editingName!.value}
+                              onChange={e => setEditingName(p => p ? { ...p, value: e.target.value } : null)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") commitNameEdit();
+                                if (e.key === "Escape") setEditingName(null);
+                              }}
+                              onBlur={commitNameEdit}
+                              onClick={e => e.stopPropagation()}
+                              onMouseDown={e => e.stopPropagation()}
+                              className="w-full h-full px-2 py-0.5 text-xs bg-transparent dark:text-gray-100 border-0 outline-none focus:ring-1 focus:ring-blue-400 focus:rounded"
+                              style={{ minWidth: 0 }}
+                            />
+                          ) : (
+                            <div className="w-full px-2 py-0.5 text-xs dark:text-gray-100 text-left overflow-hidden text-ellipsis whitespace-nowrap cursor-text">
+                              {formatFullName(String(student.lastName ?? ""), String(student.firstName ?? ""))}
+                            </div>
+                          )}
+                          {!isEditingThisName && isInCellSel(index, 1) && <div className="absolute inset-0 pointer-events-none" style={{ background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.5)", zIndex: 5 }} />}
+                          {!isEditingThisName && isCopied(index, 1)     && <div className="absolute inset-0 pointer-events-none" style={{ outline: "2px dashed #3b82f6", outlineOffset: "-2px", zIndex: 6 }} />}
+                        </td>
+                      );
+                    })()}
 
                     {/* Data columns */}
                     {allDataCols.map((col, colMapIdx) => {
-                      const colIdx = 3 + colMapIdx;
+                      const colIdx = 2 + colMapIdx;
                       const dcw = getW(col.key, 46);
                       return (
                         <td key={col.key} className={`${tdBase}`}
@@ -2846,6 +2898,8 @@ export default function InstructorUploadGrades() {
                         >
                           <input
                             type="number"
+                            name={col.key}
+                            autoComplete="off"
                             title={!isValidScore(student[col.key] as string | number | undefined) ? "Score must be 0–100" : undefined}
                             className={`w-full px-0.5 py-0.5 text-xs bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center dark:text-gray-100 [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidScore(student[col.key] as string | number | undefined) ? "ring-2 ring-red-400 rounded bg-red-50/60 dark:bg-red-900/30 focus:ring-red-400" : "focus:ring-1 focus:ring-blue-300"}`}
                             style={{ minWidth: 40 }}
@@ -2862,7 +2916,7 @@ export default function InstructorUploadGrades() {
                     })}
 
                     {/* Grade — sticky right */}
-                    {(() => { const gradeColIdx = 3 + allDataCols.length; return (
+                    {(() => { const gradeColIdx = 2 + allDataCols.length; return (
                     <td className={`${tdBase} font-bold text-blue-700`}
                       style={{ minWidth: wGrade, width: wGrade, position: "sticky", right: 0, zIndex: 10, backgroundColor: isSelected ? gradeSelBg : gradeBg }}
                       onMouseDown={() => { setCellSel({ anchor: { r: index, c: gradeColIdx }, end: { r: index, c: gradeColIdx } }); isDraggingRef.current = true; }}
@@ -2870,6 +2924,8 @@ export default function InstructorUploadGrades() {
                     >
                       <input
                         type="number"
+                        name="termGrade"
+                        autoComplete="off"
                         title={!isValidGrade(student[termGradeKey] as string | number | undefined) ? "Grade must be 1.0–5.0 (leave blank for missing)" : undefined}
                         className={`w-full px-0.5 py-0.5 text-xs font-bold bg-transparent border-0 outline-none focus:bg-white/80 dark:focus:bg-gray-700/80 focus:rounded text-center [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden ${!isValidGrade(student[termGradeKey] as string | number | undefined) ? "ring-2 ring-red-500 rounded bg-red-50/60 dark:bg-red-900/30 text-red-600 focus:ring-red-500" : "text-blue-700 dark:text-blue-300 focus:ring-1 focus:ring-blue-300"}`}
                         value={(() => { const v = student[termGradeKey]; return v !== "" && v != null && !isNaN(Number(v)) ? Number(v) : ""; })()}
@@ -2905,6 +2961,8 @@ export default function InstructorUploadGrades() {
           <div className="flex items-center gap-1.5">
             <span className="text-gray-400">Rows</span>
             <select
+              id="rows-per-page"
+              name="rowsPerPage"
               value={rows}
               onChange={(e) => { setRows(Number(e.target.value)); setFirst(0); setCellSel(null); }}
               className="border border-gray-200 dark:border-gray-600 rounded px-1.5 py-0.5 text-xs bg-white dark:bg-gray-700 dark:text-gray-200 focus:outline-none focus:border-blue-400 cursor-pointer"
@@ -2954,6 +3012,9 @@ export default function InstructorUploadGrades() {
             </p>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Column Label</label>
             <input
+              id="add-col-label"
+              name="newColLabel"
+              autoComplete="off"
               autoFocus
               className="w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 mb-5"
               placeholder="e.g. Quiz 4"
@@ -2985,6 +3046,9 @@ export default function InstructorUploadGrades() {
             </p>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Sub-group Name</label>
             <input
+              id="add-sg-name"
+              name="newSubGroupName"
+              autoComplete="off"
               autoFocus
               className="w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 mb-4"
               placeholder="e.g. Quiz/Prelim (40%)"
@@ -2994,6 +3058,9 @@ export default function InstructorUploadGrades() {
             />
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">First Column Label</label>
             <input
+              id="add-sg-col-label"
+              name="newSubGroupColLabel"
+              autoComplete="off"
               className="w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 mb-5"
               placeholder="e.g. Quiz 1"
               value={newSubGroupColLabel}
@@ -3024,6 +3091,9 @@ export default function InstructorUploadGrades() {
                   ID Number <span className="text-red-500">*</span>
                 </label>
                 <input
+                  id="add-student-id"
+                  name="newStudentId"
+                  autoComplete="off"
                   autoFocus
                   className={`w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 ${addStudentError ? "border-red-400" : ""}`}
                   placeholder="e.g. 2024-00001"
@@ -3036,6 +3106,9 @@ export default function InstructorUploadGrades() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Last Name</label>
                 <input
+                  id="add-student-last"
+                  name="newStudentLast"
+                  autoComplete="family-name"
                   className="w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
                   placeholder="e.g. Dela Cruz"
                   value={newStudentLast}
@@ -3046,6 +3119,9 @@ export default function InstructorUploadGrades() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">First Name</label>
                 <input
+                  id="add-student-first"
+                  name="newStudentFirst"
+                  autoComplete="given-name"
                   className="w-full border p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
                   placeholder="e.g. Juan"
                   value={newStudentFirst}

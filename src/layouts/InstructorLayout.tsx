@@ -82,6 +82,16 @@ export default function InstructorLayout() {
     }).catch(() => {});
   }, []);
 
+  // Lock body scroll when mobile sidebar is open
+  useEffect(() => {
+    if (mobileOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [mobileOpen]);
+
   // Update greeting every minute
   useEffect(() => {
     const id = setInterval(() => setGreeting(getGreeting()), 60_000);
@@ -124,7 +134,7 @@ export default function InstructorLayout() {
       {mobileOpen && (
         <div
           onClick={() => setMobileOpen(false)}
-          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden touch-none"
         />
       )}
 

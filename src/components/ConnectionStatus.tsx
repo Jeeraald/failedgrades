@@ -45,7 +45,7 @@ export default function ConnectionStatus({ status, isDirty, isSaving }: Props) {
 
   return (
     <span className="flex items-center gap-1.5 text-xs text-gray-400 font-medium">
-      <span className="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
+      <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
       Saved
     </span>
   );

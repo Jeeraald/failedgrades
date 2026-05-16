@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { formatFullName } from "../utils/formatters";
 import { Navigate, useNavigate } from "react-router-dom";
 import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "../firebase/firebaseConfig";
@@ -6,7 +7,7 @@ import bgImage from "../assets/background.jpg";
 import Confetti from "react-confetti";
 import { useSessionTimeout } from "../utils/useSessionTimeout";
 import SessionTimeoutModal from "../components/SessionTimeoutModal";
-import { toNum } from "../utils/studentSession";
+import { toNum, loadEnrolled } from "../utils/studentSession";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +104,7 @@ export default function ViewRecordPage() {
   const navigate = useNavigate();
 
   const [studentData] = useState<StudentData | null>(() => loadStudentFromSession());
+  const isSingleClass = (loadEnrolled()?.classes?.length ?? 0) <= 1;
   const [classData, setClassData]     = useState<ClassData | null>(null);
   const [classLoading, setClassLoading] = useState(!!studentData?.classId);
 
@@ -130,7 +132,7 @@ export default function ViewRecordPage() {
         const studentPosted = studentDoc?.posted === undefined ? true : studentDoc.posted === true;
         if (!studentPosted) {
           sessionStorage.removeItem("studentRecord");
-          navigate("/subject-select", { replace: true });
+          navigate(isSingleClass ? "/" : "/subject-select", { replace: true });
         }
       })
       .catch(() => {});
@@ -143,7 +145,7 @@ export default function ViewRecordPage() {
         if (snap.metadata.fromCache) return; // wait for server-confirmed data only
         if (!snap.exists() || snap.data().enabled === false || !snap.data().gradesPosted) {
           sessionStorage.removeItem("studentRecord");
-          navigate("/subject-select", { replace: true });
+          navigate(isSingleClass ? "/" : "/subject-select", { replace: true });
           return;
         }
         const d = snap.data();
@@ -263,7 +265,7 @@ export default function ViewRecordPage() {
   };
 
   // ── Page info ──────────────────────────────────────────────────────────────
-  const fullName  = `${studentData.lastName.toUpperCase()}, ${studentData.firstName.toUpperCase()}`;
+  const fullName  = formatFullName(studentData.lastName, studentData.firstName);
   const pageTitle = studentData.courseCode && studentData.subjectName
     ? `${studentData.courseCode} — ${studentData.subjectName}`
     : studentData.courseCode ?? "Class Record";
@@ -359,15 +361,28 @@ export default function ViewRecordPage() {
         )}
 
         <div className="mt-6 flex justify-center gap-3">
-          <button
-            onClick={() => {
-              sessionStorage.removeItem("studentRecord");
-              navigate("/subject-select", { replace: true });
-            }}
-            className="w-full sm:w-auto bg-blue-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-blue-700 shadow-md transition"
-          >
-            ← Back to Subjects
-          </button>
+          {isSingleClass ? (
+            <button
+              onClick={() => {
+                sessionStorage.removeItem("studentRecord");
+                sessionStorage.removeItem("enrolledSubjects");
+                navigate("/", { replace: true });
+              }}
+              className="w-full sm:w-auto bg-blue-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-blue-700 shadow-md transition"
+            >
+              Logout
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                sessionStorage.removeItem("studentRecord");
+                navigate("/subject-select", { replace: true });
+              }}
+              className="w-full sm:w-auto bg-blue-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-blue-700 shadow-md transition"
+            >
+              ← Back to Subjects
+            </button>
+          )}
         </div>
       </div>
     </div>

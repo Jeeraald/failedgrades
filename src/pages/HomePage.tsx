@@ -4,7 +4,8 @@ import { db } from "../firebase/firebaseConfig";
 import { useNavigate } from "react-router-dom";
 import bgImage from "../assets/background.jpg";
 import { logger } from "../utils/logger";
-import { normalizeForComparison } from "../utils/formatters";
+import { normalizeForComparison, stripSuffixes } from "../utils/formatters";
+import { loadViewedClasses } from "../utils/studentSession";
 import {
   checkLoginRateLimit,
   recordFailedLogin,
@@ -140,12 +141,34 @@ export default function HomePage() {
       // as equivalent.  The DISPLAYED name always comes from the database record,
       // never from what the student typed.
       const tryMatch = (d: Record<string, unknown>) => {
-        const storedFirst = normalizeForComparison(String(d.firstName ?? ""));
-        const storedLast  = normalizeForComparison(String(d.lastName  ?? ""));
-        const inputFirst  = normalizeForComparison(trimmedFirst);
-        const inputLast   = normalizeForComparison(trimmedLast);
-        logger.debug("[login] normalized stored:", { storedFirst, storedLast }, "input:", { inputFirst, inputLast });
-        return storedFirst === inputFirst && storedLast === inputLast;
+        // Strip suffixes before normalising so students who read their suffix-free
+        // display name can still log in even if the DB stores "Dela Cruz Jr."
+        const storedFirst = normalizeForComparison(stripSuffixes(String(d.firstName ?? "")));
+        const storedLast  = normalizeForComparison(stripSuffixes(String(d.lastName  ?? "")));
+        const inputFirst  = normalizeForComparison(stripSuffixes(trimmedFirst));
+        const inputLast   = normalizeForComparison(stripSuffixes(trimmedLast));
+
+        // Last name: exact match (after normalization + suffix strip).
+        if (storedLast !== inputLast) return false;
+
+        // First name: word-boundary prefix match in either direction.
+        // Handles students with multiple given names — e.g. stored "juan miguel carlo":
+        //   input "juan"         → stored starts with "juan " ✓
+        //   input "juan miguel"  → stored starts with "juan miguel " ✓
+        //   input "juan miguel carlo" → exact match ✓
+        // Also handles the reverse (stored has fewer parts than typed):
+        //   stored "juan", input "juan miguel" → input starts with "juan " ✓
+        const atWordBound = (longer: string, shorter: string) =>
+          longer.startsWith(shorter) &&
+          (longer.length === shorter.length || longer[shorter.length] === " ");
+
+        const firstMatch =
+          storedFirst === inputFirst ||
+          atWordBound(storedFirst, inputFirst) ||
+          atWordBound(inputFirst, storedFirst);
+
+        logger.debug("[login] normalized stored:", { storedFirst, storedLast }, "input:", { inputFirst, inputLast }, "firstMatch:", firstMatch);
+        return firstMatch;
       };
 
       if (studentSnap?.exists()) {
@@ -288,7 +311,9 @@ export default function HomePage() {
           "enrolledSubjects",
           JSON.stringify({ idNumber: trimmedId, firstName: identityFirst, lastName: identityLast, classes: [entry] })
         );
-        navigate("/subject-select");
+        // Single class — skip the subject list and go straight to the grade view
+        sessionStorage.setItem("studentRecord", JSON.stringify(entry));
+        navigate(loadViewedClasses().has(String(entry.classId)) ? "/viewrecord" : "/grade-reveal");
         return;
       }
 
@@ -385,7 +410,13 @@ export default function HomePage() {
         })
       );
 
-      navigate("/subject-select");
+      // Skip the subject list when the student is enrolled in only one class
+      if (enrolledClasses.length === 1) {
+        sessionStorage.setItem("studentRecord", JSON.stringify(enrolledClasses[0]));
+        navigate(loadViewedClasses().has(String(enrolledClasses[0].classId)) ? "/viewrecord" : "/grade-reveal");
+      } else {
+        navigate("/subject-select");
+      }
     } catch (err) {
       console.error(err);
       setError("Database error.");
@@ -431,7 +462,10 @@ export default function HomePage() {
               First Name
             </label>
             <input
+              id="login-firstname"
+              name="firstName"
               type="text"
+              autoComplete="given-name"
               value={firstName}
               onChange={(e) => setFirstName(e.target.value)}
               onFocus={() => handleFocus("first")}
@@ -447,7 +481,10 @@ export default function HomePage() {
               Last Name
             </label>
             <input
+              id="login-lastname"
+              name="lastName"
               type="text"
+              autoComplete="family-name"
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
               onFocus={() => handleFocus("last")}
@@ -463,7 +500,10 @@ export default function HomePage() {
               Student ID
             </label>
             <input
+              id="login-idnumber"
+              name="idNumber"
               type="text"
+              autoComplete="username"
               value={idNumber}
               onChange={(e) => setIdNumber(e.target.value)}
               onFocus={() => handleFocus("id")}

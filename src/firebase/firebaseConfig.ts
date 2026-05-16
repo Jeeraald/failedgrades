@@ -1,8 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
 } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 import { getStorage } from "firebase/storage";
@@ -31,10 +30,12 @@ initializeAppCheck(app, {
 
 // Enable IndexedDB-backed offline persistence so Firestore reads/writes
 // continue to work while the device has no internet connection.
+// memoryLocalCache has no IndexedDB lease, so it never produces
+// "Failed to obtain primary lease" errors regardless of tab count.
+// Firestore still syncs live with the server — onSnapshot works normally —
+// but there is no local disk cache between page loads (acceptable for this app).
 export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager(),
-  }),
+  localCache: memoryLocalCache(),
 });
 export const auth = getAuth(app);
 export const storage = getStorage(app);
