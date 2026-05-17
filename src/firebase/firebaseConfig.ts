@@ -18,15 +18,19 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// Log a debug token in dev — add it to Firebase Console > App Check > Manage debug tokens
+const recaptchaSiteKey = import.meta.env.VITE_RECAPTCHA_V3_SITE_KEY as string | undefined;
+
 if (import.meta.env.DEV) {
+  // Log a debug token in dev — add it to Firebase Console > App Check > Manage debug tokens
   (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
 }
 
-initializeAppCheck(app, {
-  provider: new ReCaptchaV3Provider(import.meta.env.VITE_RECAPTCHA_V3_SITE_KEY as string),
-  isTokenAutoRefreshEnabled: true,
-});
+if (recaptchaSiteKey) {
+  initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider(recaptchaSiteKey),
+    isTokenAutoRefreshEnabled: true,
+  });
+}
 
 // Enable IndexedDB-backed offline persistence so Firestore reads/writes
 // continue to work while the device has no internet connection.

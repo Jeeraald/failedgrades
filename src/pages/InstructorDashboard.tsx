@@ -23,7 +23,7 @@ export default function InstructorDashboard() {
       where("instructorUid", "==", uid)
     );
 
-    const unsubscribeClasses = onSnapshot(classesQuery, async (snapshot) => {
+    const unsubscribeClasses = onSnapshot(classesQuery, (snapshot) => {
       setClassCount(snapshot.size);
 
       const subjects = new Set<string>();
@@ -45,7 +45,7 @@ export default function InstructorDashboard() {
       let passed = 0;
       let failed = 0;
 
-      await Promise.all(
+      Promise.all(
         snapshot.docs.map(async (classDoc) => {
           const classData = classDoc.data();
           const gradeKey =
@@ -66,13 +66,19 @@ export default function InstructorDashboard() {
             }
           });
         })
-      );
-
-      // Guard: component may have unmounted while the async work was in flight
-      if (!mounted) return;
-      setStudentCount(total);
-      setPassedCount(passed);
-      setFailedCount(failed);
+      ).then(() => {
+        // Guard: component may have unmounted while the async work was in flight
+        if (!mounted) return;
+        setStudentCount(total);
+        setPassedCount(passed);
+        setFailedCount(failed);
+      }).catch(() => {
+        // Stats will refresh on next snapshot; don't leave stale values
+        if (!mounted) return;
+        setStudentCount(0);
+        setPassedCount(0);
+        setFailedCount(0);
+      });
     });
 
     return () => {

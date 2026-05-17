@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import viteImagemin from 'vite-plugin-imagemin'
+import { ViteImageOptimizer } from 'vite-plugin-image-optimizer'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -10,10 +10,10 @@ export default defineConfig({
         plugins: [['babel-plugin-react-compiler']],
       },
     }),
-    viteImagemin({
-      mozjpeg: { quality: 75, progressive: true },
-      optipng: { optimizationLevel: 5 },
-      svgo: { plugins: [{ name: 'removeViewBox', active: false }] },
+    ViteImageOptimizer({
+      jpg: { quality: 75, progressive: true },
+      jpeg: { quality: 75, progressive: true },
+      png: { compressionLevel: 5 },
     }),
   ],
   build: {

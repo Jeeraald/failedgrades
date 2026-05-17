@@ -113,20 +113,20 @@ export default function InstructorSettings() {
 
   // Load auth user and profile
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) return;
       setUid(user.uid);
       setEmail(user.email || "");
 
-      const snap = await getDoc(doc(db, "instructors", user.uid));
-      if (snap.exists()) {
+      getDoc(doc(db, "instructors", user.uid)).then((snap) => {
+        if (!snap.exists()) return;
         const data = snap.data();
         setFirstName(data.firstName || "");
         setLastName(data.lastName || "");
         setMiddleName(data.middleName || "");
         setNickname(data.nickname || "");
         setPhotoURL(data.photoURL || null);
-      }
+      }).catch(() => {});
     });
     return () => unsubscribe();
   }, []);

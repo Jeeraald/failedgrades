@@ -32,7 +32,14 @@
       "Bash(node -e \"const fs=require\\('fs'\\);let c=fs.readFileSync\\('src/utils/formatters.ts','utf8'\\);c=c.replace\\(/\\\\.replace\\\\\\(\\\\/\\\\[.*?\\\\]\\\\/g, \\\\\"\\\\\"\\\\\\)/,'\\\\.replace\\(/[\\\\\\\\\\\\\\\\u0300-\\\\\\\\\\\\\\\\u036F]/g, \\\\\"\\\\\"\\)'\\);fs.writeFileSync\\('src/utils/formatters.ts',c,'utf8'\\);console.log\\('done'\\)\")",
       "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.statSync\\('src/assets/background.jpg'\\); console.log\\('Size:', \\(s.size/1024/1024\\).toFixed\\(2\\)+'MB'\\);\")",
       "Bash(node -e \"try{require\\('vite-plugin-imagemin'\\);console.log\\('ok'\\)}catch\\(e\\){console.log\\('not installed:',e.message\\)}\")",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(npm ls *)",
+      "Bash(npm uninstall *)",
+      "Bash(npm audit *)",
+      "Bash(node -e \"const p = require\\('./node_modules/vite-plugin-image-optimizer/dist/index.cjs'\\); console.log\\(typeof p\\)\")",
+      "Bash(node -e \"const p = require\\('./node_modules/vite-plugin-image-optimizer/dist/index.cjs'\\); console.log\\(Object.keys\\(p\\)\\)\")",
+      "Bash(node -e \"const {readFileSync} = require\\('fs'\\); console.log\\(readFileSync\\('./node_modules/vite-plugin-image-optimizer/dist/index.d.ts', 'utf8'\\).slice\\(0, 2000\\)\\)\")",
+      "Bash(node -e \"const svgo = require\\('./node_modules/svgo/package.json'\\); console.log\\(svgo.version\\)\")"
     ]
   }
 }
