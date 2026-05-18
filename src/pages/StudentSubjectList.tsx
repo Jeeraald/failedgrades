@@ -331,7 +331,7 @@ export default function StudentSubjectList() {
             Back to Login
           </button>
           <p className="text-white/50 text-xs">
-            Made by <span className="font-semibold text-blue-300">Sir Jerald</span>
+            © 2026 USTPV | Developed by Sir Jerald | Version 2
           </p>
         </div>
       </div>

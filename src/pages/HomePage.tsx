@@ -527,8 +527,7 @@ export default function HomePage() {
         {error && <p className="text-red-500 mt-4 text-center">{error}</p>}
 
         <p className="text-center text-gray-500 mt-10 text-sm">
-          Made by{" "}
-          <span className="font-semibold text-blue-600">Sir Jerald</span>
+          © 2026 USTPV | Developed by Sir Jerald | Version 2
         </p>
       </div>
     </div>
