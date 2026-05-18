@@ -1187,6 +1187,17 @@ export default function InstructorUploadGrades() {
         if (dirtyIdsRef.current.size === 0) setIsDirty(false);
         setSelectedIds(new Set());
 
+        // If deleting these students leaves no one with posted=true, clear the class-level flag
+        if (classInfo?.gradesPosted) {
+          const anyRemainingPosted = recordsRef.current.some(
+            r => !ids.includes(r.idNumber) && r.posted === true
+          );
+          if (!anyRemainingPosted) {
+            await updateDoc(doc(db, "classes", classId), { gradesPosted: false, gradesPostedAt: null });
+            setClassInfo(prev => prev ? { ...prev, gradesPosted: false } : prev);
+          }
+        }
+
         const undoDelete = async () => {
           if (!classId) return;
           try {

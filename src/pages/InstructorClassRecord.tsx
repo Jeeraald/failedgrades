@@ -11,6 +11,7 @@ import {
   getDocs,
   query,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { db, auth } from "../firebase/firebaseConfig";
 import { useNavigate } from "react-router-dom";
@@ -47,6 +48,8 @@ export default function InstructorClassRecord() {
   const [term, setTerm] = useState<"Midterm" | "Final" | "Midyear">("Midterm");
 
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<{ current: number; total: number } | null>(null);
 
   const toast = useRef<Toast>(null);
   const navigate = useNavigate();
@@ -271,13 +274,26 @@ export default function InstructorClassRecord() {
       acceptClassName: "custom-yes",
       rejectClassName: "custom-no",
       accept: async () => {
+        setDeletingId(id);
         try {
           const studentsSnapshot = await getDocs(
             collection(db, "classes", id, "students")
           );
-          for (const studentDoc of studentsSnapshot.docs) {
-            await deleteDoc(doc(db, "classes", id, "students", studentDoc.id));
-            await deleteDoc(doc(db, "students", studentDoc.id));
+          const studentDocs = studentsSnapshot.docs;
+          const total = studentDocs.length;
+          setDeleteProgress({ current: 0, total });
+
+          const CHUNK = 200;
+          let done = 0;
+          for (let i = 0; i < studentDocs.length; i += CHUNK) {
+            const batch = writeBatch(db);
+            studentDocs.slice(i, i + CHUNK).forEach((studentDoc) => {
+              batch.delete(doc(db, "classes", id, "students", studentDoc.id));
+              batch.delete(doc(db, "students", studentDoc.id));
+            });
+            await batch.commit();
+            done += studentDocs.slice(i, i + CHUNK).length;
+            setDeleteProgress({ current: done, total });
           }
           await deleteDoc(doc(db, "classes", id));
           toast.current?.show({
@@ -295,6 +311,9 @@ export default function InstructorClassRecord() {
             detail: "Something went wrong. Please try again.",
             life: 3000,
           });
+        } finally {
+          setDeletingId(null);
+          setDeleteProgress(null);
         }
       },
     });
@@ -358,12 +377,29 @@ export default function InstructorClassRecord() {
         cls.yearSection.toLowerCase().includes(q)
       );
     })
-    .sort((a, b) => a.courseCode.localeCompare(b.courseCode));
+    .sort((a, b) => {
+      const cmp = a.courseCode.localeCompare(b.courseCode);
+      return cmp !== 0 ? cmp : a.yearSection.localeCompare(b.yearSection);
+    });
 
   return (
     <div className="p-6 relative dark:text-gray-100">
       <Toast ref={toast} position="top-right" />
       <ConfirmDialog />
+
+      {deleteProgress && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 flex flex-col items-center gap-3 min-w-[220px]">
+            <i className="pi pi-spin pi-spinner text-red-500 text-3xl" />
+            <p className="font-semibold text-gray-700 dark:text-gray-200">Deleting class…</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {deleteProgress.total === 0
+                ? "Removing class…"
+                : `${deleteProgress.current} / ${deleteProgress.total} students`}
+            </p>
+          </div>
+        </div>
+      )}
 
       <h1 className="text-2xl sm:text-3xl font-bold mb-6 text-blue-700 dark:text-blue-400">Class Records</h1>
 
@@ -470,9 +506,20 @@ export default function InstructorClassRecord() {
                 </button>
                 <button
                   onClick={() => handleDelete(cls.id)}
-                  className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                  disabled={deletingId !== null}
+                  className={`px-3 py-1 rounded text-white text-sm flex items-center gap-1 transition ${
+                    deletingId === cls.id
+                      ? "bg-red-400 cursor-not-allowed"
+                      : deletingId !== null
+                      ? "bg-red-300 cursor-not-allowed"
+                      : "bg-red-500 hover:bg-red-600"
+                  }`}
                 >
-                  Delete
+                  {deletingId === cls.id ? (
+                    <><i className="pi pi-spin pi-spinner text-xs"></i> Deleting…</>
+                  ) : (
+                    "Delete"
+                  )}
                 </button>
               </div>
             </div>
