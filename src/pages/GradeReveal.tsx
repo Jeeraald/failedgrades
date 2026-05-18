@@ -126,6 +126,7 @@ export default function GradeReveal() {
     onLogout: () => {
       sessionStorage.removeItem("studentRecord");
       sessionStorage.removeItem("enrolledSubjects");
+      sessionStorage.removeItem("viewedClasses");
       navigate("/", { replace: true });
     },
   });
@@ -197,6 +198,7 @@ export default function GradeReveal() {
             onClick={() => {
               sessionStorage.removeItem("studentRecord");
               sessionStorage.removeItem("enrolledSubjects");
+              sessionStorage.removeItem("viewedClasses");
               navigate("/", { replace: true });
             }}
             className="w-full bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 shadow-sm transition flex items-center justify-center gap-2"
@@ -339,6 +341,7 @@ export default function GradeReveal() {
               onClick={() => {
                 sessionStorage.removeItem("studentRecord");
                 sessionStorage.removeItem("enrolledSubjects");
+                sessionStorage.removeItem("viewedClasses");
                 navigate("/", { replace: true });
               }}
               className="w-full bg-gray-100 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-200 transition"

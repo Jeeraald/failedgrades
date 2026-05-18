@@ -132,6 +132,7 @@ export default function ViewRecordPage() {
         const studentPosted = studentDoc?.posted === undefined ? true : studentDoc.posted === true;
         if (!studentPosted) {
           sessionStorage.removeItem("studentRecord");
+          sessionStorage.removeItem("viewedClasses");
           navigate(isSingleClass ? "/" : "/subject-select", { replace: true });
         }
       })
@@ -144,8 +145,15 @@ export default function ViewRecordPage() {
       (snap) => {
         if (snap.metadata.fromCache) return; // wait for server-confirmed data only
         if (!snap.exists() || snap.data().enabled === false || !snap.data().gradesPosted) {
-          sessionStorage.removeItem("studentRecord");
-          navigate(isSingleClass ? "/" : "/subject-select", { replace: true });
+          // Unmark viewed so next login goes to grade-reveal (which shows "not posted" gracefully)
+          sessionStorage.removeItem("viewedClasses");
+          if (isSingleClass) {
+            // Keep studentRecord so grade-reveal can show the course/student info
+            navigate("/grade-reveal", { replace: true });
+          } else {
+            sessionStorage.removeItem("studentRecord");
+            navigate("/subject-select", { replace: true });
+          }
           return;
         }
         const d = snap.data();
@@ -172,6 +180,7 @@ export default function ViewRecordPage() {
     onLogout: () => {
       sessionStorage.removeItem("studentRecord");
       sessionStorage.removeItem("enrolledSubjects");
+      sessionStorage.removeItem("viewedClasses");
       navigate("/", { replace: true });
     },
   });
@@ -366,6 +375,7 @@ export default function ViewRecordPage() {
               onClick={() => {
                 sessionStorage.removeItem("studentRecord");
                 sessionStorage.removeItem("enrolledSubjects");
+                sessionStorage.removeItem("viewedClasses");
                 navigate("/", { replace: true });
               }}
               className="w-full sm:w-auto bg-blue-600 text-white font-semibold py-3 px-6 rounded-xl hover:bg-blue-700 shadow-md transition"

@@ -239,6 +239,7 @@ export default function StudentSubjectList() {
     onLogout: () => {
       sessionStorage.removeItem("enrolledSubjects");
       sessionStorage.removeItem("studentRecord");
+      sessionStorage.removeItem("viewedClasses");
       navigate("/", { replace: true });
     },
   });
@@ -260,6 +261,7 @@ export default function StudentSubjectList() {
   const handleLogout = () => {
     sessionStorage.removeItem("enrolledSubjects");
     sessionStorage.removeItem("studentRecord");
+    sessionStorage.removeItem("viewedClasses");
     navigate("/", { replace: true });
   };
 
